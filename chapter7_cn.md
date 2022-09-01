@@ -678,7 +678,102 @@ sys     0m1.188s
 
 这是我们的第一段代码，客户要求提供测试数据，而服务器只是将其作为一系列的消息发送，没有停止呼吸，每条消息都有一个*chunk*。
 
-```[[ type="example" title="File transfer test, model 1" name="fileio1"]]
+```c
+//  File Transfer model #1
+//  
+//  In which the server sends the entire file to the client in
+//  large chunks with no attempt at flow control.
+
+#include <czmq.h>
+#define CHUNK_SIZE  250000
+
+static void
+client_thread (void *args, zctx_t *ctx, void *pipe)
+{
+    void *dealer = zsocket_new (ctx, ZMQ_DEALER);
+    zsocket_connect (dealer, "tcp://127.0.0.1:6000");
+    
+    zstr_send (dealer, "fetch");
+    size_t total = 0;       //  Total bytes received
+    size_t chunks = 0;      //  Total chunks received
+    
+    while (true) {
+        zframe_t *frame = zframe_recv (dealer);
+        if (!frame)
+            break;              //  Shutting down, quit
+        chunks++;
+        size_t size = zframe_size (frame);
+        zframe_destroy (&frame);
+        total += size;
+        if (size == 0)
+            break;              //  Whole file received
+    }
+    printf ("%zd chunks received, %zd bytes\n", chunks, total);
+    zstr_send (pipe, "OK");
+}
+
+//  .split File server thread
+//  The server thread reads the file from disk in chunks, and sends
+//  each chunk to the client as a separate message. We only have one
+//  test file, so open that once and then serve it out as needed:
+
+static void
+server_thread (void *args, zctx_t *ctx, void *pipe)
+{
+    FILE *file = fopen ("testdata", "r");
+    assert (file);
+
+    void *router = zsocket_new (ctx, ZMQ_ROUTER);
+    //  Default HWM is 1000, which will drop messages here
+    //  because we send more than 1,000 chunks of test data,
+    //  so set an infinite HWM as a simple, stupid solution:
+    zsocket_set_hwm (router, 0);
+    zsocket_bind (router, "tcp://*:6000");
+    while (true) {
+        //  First frame in each message is the sender identity
+        zframe_t *identity = zframe_recv (router);
+        if (!identity)
+            break;              //  Shutting down, quit
+            
+        //  Second frame is "fetch" command
+        char *command = zstr_recv (router);
+        assert (streq (command, "fetch"));
+        free (command);
+
+        while (true) {
+            byte *data = malloc (CHUNK_SIZE);
+            assert (data);
+            size_t size = fread (data, 1, CHUNK_SIZE, file);
+            zframe_t *chunk = zframe_new (data, size);
+            zframe_send (&identity, router, ZFRAME_REUSE + ZFRAME_MORE);
+            zframe_send (&chunk, router, 0);
+            if (size == 0)
+                break;          //  Always end with a zero-size frame
+        }
+        zframe_destroy (&identity);
+    }
+    fclose (file);
+}
+
+//  .split File main thread
+//  The main task starts the client and server threads; it's easier
+//  to test this as a single process with threads, than as multiple
+//  processes:
+
+int main (void)
+{
+    //  Start child threads
+    zctx_t *ctx = zctx_new ();
+    zthread_fork (ctx, server_thread, NULL);
+    void *client =
+    zthread_fork (ctx, client_thread, NULL);
+    //  Loop until client tells us it's done
+    char *string = zstr_recv (client);
+    free (string);
+    //  Kill server thread
+    zctx_destroy (&ctx);
+    return 0;
+}
 ```
 
 这很简单，但我们已经遇到了一个问题：如果我们向ROUTER套接字发送太多的数据，我们很容易就会溢出。简单但愚蠢的解决方案是在套接字上设置一个无限的高水位线。这很愚蠢，因为我们现在没有保护措施来防止耗尽服务器的内存。然而，如果没有一个无限的HWM，我们就有可能丢失大块的文件。
@@ -689,7 +784,111 @@ sys     0m1.188s
 
 下面是改进后的第二种模式，即客户端一次要求一个块，而服务器只为它从客户端得到的每个请求发送一个块。
 
-```[[ type="example" title="文件传输测试，模型2" name="fileio2"] ]
+```c
+//  File Transfer model #2
+//  
+//  In which the client requests each chunk individually, thus
+//  eliminating server queue overflows, but at a cost in speed.
+
+#include <czmq.h>
+#define CHUNK_SIZE  250000
+
+static void
+client_thread (void *args, zctx_t *ctx, void *pipe)
+{
+    void *dealer = zsocket_new (ctx, ZMQ_DEALER);
+    zsocket_set_hwm (dealer, 1);
+    zsocket_connect (dealer, "tcp://127.0.0.1:6000");
+
+    size_t total = 0;       //  Total bytes received
+    size_t chunks = 0;      //  Total chunks received
+
+    while (true) {
+        //  Ask for next chunk
+        zstr_sendm (dealer, "fetch");
+        zstr_sendfm (dealer, "%ld", total);
+        zstr_sendf (dealer, "%d", CHUNK_SIZE);
+        
+        zframe_t *chunk = zframe_recv (dealer);
+        if (!chunk)
+            break;              //  Shutting down, quit
+        chunks++;
+        size_t size = zframe_size (chunk);
+        zframe_destroy (&chunk);
+        total += size;
+        if (size < CHUNK_SIZE)
+            break;              //  Last chunk received; exit
+    }
+    printf ("%zd chunks received, %zd bytes\n", chunks, total);
+    zstr_send (pipe, "OK");
+}
+
+//  .split File server thread
+//  The server thread waits for a chunk request from a client,
+//  reads that chunk, and sends it back to the client:
+
+static void
+server_thread (void *args, zctx_t *ctx, void *pipe)
+{
+    FILE *file = fopen ("testdata", "r");
+    assert (file);
+
+    void *router = zsocket_new (ctx, ZMQ_ROUTER);
+    zsocket_set_hwm (router, 1);
+    zsocket_bind (router, "tcp://*:6000");
+    while (true) {
+        //  First frame in each message is the sender identity
+        zframe_t *identity = zframe_recv (router);
+        if (!identity)
+            break;              //  Shutting down, quit
+            
+        //  Second frame is "fetch" command
+        char *command = zstr_recv (router);
+        assert (streq (command, "fetch"));
+        free (command);
+
+        //  Third frame is chunk offset in file
+        char *offset_str = zstr_recv (router);
+        size_t offset = atoi (offset_str);
+        free (offset_str);
+
+        //  Fourth frame is maximum chunk size
+        char *chunksz_str = zstr_recv (router);
+        size_t chunksz = atoi (chunksz_str);
+        free (chunksz_str);
+
+        //  Read chunk of data from file
+        fseek (file, offset, SEEK_SET);
+        byte *data = malloc (chunksz);
+        assert (data);
+
+        //  Send resulting chunk to client
+        size_t size = fread (data, 1, chunksz, file);
+        zframe_t *chunk = zframe_new (data, size);
+        zframe_send (&identity, router, ZFRAME_MORE);
+        zframe_send (&chunk, router, 0);
+    }
+    fclose (file);
+}
+
+//  The main task is just the same as in the first model.
+//  .skip
+
+int main (void)
+{
+    //  Start child threads
+    zctx_t *ctx = zctx_new ();
+    zthread_fork (ctx, server_thread, NULL);
+    void *client =
+    zthread_fork (ctx, client_thread, NULL);
+    //  Loop until client tells us it's done
+    char *string = zstr_recv (client);
+    free (string);
+    //  Kill server thread
+    zctx_destroy (&ctx);
+    return 0;
+}
+//  .until
 ```
 
 现在它要慢得多，因为客户端和服务器之间的来回聊天。在本地环路连接上（客户端和服务器在同一个盒子上），我们为每个请求-回复的往返支付大约300微秒。这听起来不多，但它很快就会增加。
@@ -770,7 +969,125 @@ S: send chunk 3
 
 下面是我们的文件传输测试平台的第三个模型，有管道。客户端提前发送一些请求（"信用"），然后每次处理一个传入的数据块时，都会再发送一个信用。服务器将永远不会发送超过客户要求的块数。
 
-```[[ type="example" title="文件传输测试，模型3" name="fileio3"] ]
+```c
+//  File Transfer model #3
+//  
+//  In which the client requests each chunk individually, using
+//  command pipelining to give us a credit-based flow control.
+
+#include <czmq.h>
+#define CHUNK_SIZE  250000
+#define PIPELINE    10
+
+static void
+client_thread (void *args, zctx_t *ctx, void *pipe)
+{
+    void *dealer = zsocket_new (ctx, ZMQ_DEALER);
+    zsocket_connect (dealer, "tcp://127.0.0.1:6000");
+
+    //  Up to this many chunks in transit
+    size_t credit = PIPELINE;
+    
+    size_t total = 0;       //  Total bytes received
+    size_t chunks = 0;      //  Total chunks received
+    size_t offset = 0;      //  Offset of next chunk request
+    
+    while (true) {
+        while (credit) {
+            //  Ask for next chunk
+            zstr_sendm  (dealer, "fetch");
+            zstr_sendfm (dealer, "%ld", offset);
+            zstr_sendf  (dealer, "%ld", (long) CHUNK_SIZE);
+            offset += CHUNK_SIZE;
+            credit--;
+        }
+        zframe_t *chunk = zframe_recv (dealer);
+        if (!chunk)
+            break;              //  Shutting down, quit
+        chunks++;
+        credit++;
+        size_t size = zframe_size (chunk);
+        zframe_destroy (&chunk);
+        total += size;
+        if (size < CHUNK_SIZE)
+            break;              //  Last chunk received; exit
+    }
+    printf ("%zd chunks received, %zd bytes\n", chunks, total);
+    zstr_send (pipe, "OK");
+}
+
+//  The rest of the code is exactly the same as in model 2, except
+//  that we set the HWM on the server's ROUTER socket to PIPELINE
+//  to act as a sanity check.
+//  .skip
+
+//  The server thread waits for a chunk request from a client,
+//  reads that chunk and sends it back to the client:
+
+static void
+server_thread (void *args, zctx_t *ctx, void *pipe)
+{
+    FILE *file = fopen ("testdata", "r");
+    assert (file);
+
+    void *router = zsocket_new (ctx, ZMQ_ROUTER);
+    //  We have two parts per message so HWM is PIPELINE * 2
+    zsocket_set_hwm (router, PIPELINE * 2);
+    zsocket_bind (router, "tcp://*:6000");
+    while (true) {
+        //  First frame in each message is the sender identity
+        zframe_t *identity = zframe_recv (router);
+        if (!identity)
+            break;              //  Shutting down, quit
+            
+        //  Second frame is "fetch" command
+        char *command = zstr_recv (router);
+        assert (streq (command, "fetch"));
+        free (command);
+
+        //  Third frame is chunk offset in file
+        char *offset_str = zstr_recv (router);
+        size_t offset = atoi (offset_str);
+        free (offset_str);
+
+        //  Fourth frame is maximum chunk size
+        char *chunksz_str = zstr_recv (router);
+        size_t chunksz = atoi (chunksz_str);
+        free (chunksz_str);
+
+        //  Read chunk of data from file
+        fseek (file, offset, SEEK_SET);
+        byte *data = malloc (chunksz);
+        assert (data);
+
+        //  Send resulting chunk to client
+        size_t size = fread (data, 1, chunksz, file);
+        zframe_t *chunk = zframe_new (data, size);
+        zframe_send (&identity, router, ZFRAME_MORE);
+        zframe_send (&chunk, router, 0);
+    }
+    fclose (file);
+}
+
+//  The main task starts the client and server threads; it's easier
+//  to test this as a single process with threads, than as multiple
+//  processes:
+
+int main (void)
+{
+    //  Start child threads
+    zctx_t *ctx = zctx_new ();
+    zthread_fork (ctx, server_thread, NULL);
+    void *client =
+    zthread_fork (ctx, client_thread, NULL);
+    //  Loop until client tells us it's done
+    char *string = zstr_recv (client);
+    free (string);
+    //  Kill server thread
+    zctx_destroy (&ctx);
+    return 0;
+}
+//  .until
 ```
 
 这一调整让我们完全控制了端到端的管道，包括所有网络缓冲区和发送方和接收方的ZeroMQ队列。我们确保管道总是充满了数据，同时永远不会超过预定的限制。不仅如此，客户端还能准确决定何时向发送方发送 "信用"。这可能是当它收到一个块，或当它完全处理了一个块。而这是异步发生的，没有明显的性能成本。
@@ -959,7 +1276,7 @@ use-peering = C:ICANHAZ
 
 这里有一个简单的主程序，可以启动生成的NOM服务器。
 
-```[[ type="fragment" name="nomserver"]]
+```c
 #include "czmq.h"
 #include "nom_server.h"
 
@@ -975,7 +1292,7 @@ int main (int argc, char *argv [])
 ```
 生成的nom_server类是一个相当经典的模型。它在ROUTER套接字上接受客户端消息，所以每个请求的第一帧是客户端的连接身份。服务器管理着一组客户，每个客户都有自己的状态。当消息到达时，它将这些消息作为*事件*反馈给状态机。这里是状态机的核心，由GSL命令和我们打算生成的C代码混合而成。
 
-```[[ type="fragment" name="gsl-client-fsm"]]
+```c
 client_execute (client_t *self, int event)
 {
     self->next_event = event;
@@ -1016,7 +1333,7 @@ client_execute (client_t *self, int event)
 
 每个客户都被当作一个具有各种属性的对象，包括我们需要用来表示一个状态机实例的变量。
 
-```[[ type="fragment" name="fsm-instance"]]
+```c
 event_t next_event;         *  Next event
 state_t state;              *  Current state
 event_t event;              *  Current event
@@ -1160,7 +1477,7 @@ FileMQ必须是安全的（能够），容易与随机脚本语言挂钩，并�
 
 因此，我将把FileMQ构建为两块：一个客户端和一个服务器。然后，我将把这些放在一个主程序中（{{filemq}}工具），它既可以作为客户端也可以作为服务器。这两块东西看起来会和{{nom_server}}很相似，有相同的API。
 
-```[[ type="fragment" name="filemq-main"]]
+```c
 fmq_server_t *server = fmq_server_new ()。
 fmq_server_bind (server, "tcp://*:5670")。
 fmq_server_publish (server, "/home/ph/filemq/share", "/public")。
@@ -1356,7 +1673,7 @@ zlist_append (self->mounts, mount);
 
 这被变成了这段代码。
 
-```[[ type="fragment" name="fmq-server-methods"]]
+```c
 void
 fmq_server_publish (fmq_server_t *self, char *location, char *alias)
 {
@@ -1401,7 +1718,7 @@ fmq_server_publish (fmq_server_t *self, char *location, char *alias)
 
 例如，这就是我们启动和配置服务器的方法。
 
-```[[ type="fragment" name="fmq-server-api"]]
+```c
 server = fmq_server_new ();
 fmq_server_configure（server，"server_test.cfg"）。
 fmq_server_publish (server, "./fmqroot/send", "/")。
@@ -1411,7 +1728,7 @@ fmq_server_bind (server, "tcp://*:5670");
 
 我们确实为配置文件使用了一种特定的格式，即[http://rfc.zeromq.org/spec:4 ZPL]，这是一种极简的语法，我们几年前就开始为ZeroMQ "设备 "使用，但对任何服务器都很适用。
 
-```
+```ini
 #   Configure server for plain access
 #
 server
@@ -1451,7 +1768,7 @@ security
 
 我们使用的多线程API模型的一个好处是，它基本上是基于消息的。这使得它非常适合于将事件返回给调用者。一个更传统的API方法是使用回调。但是跨越线程边界的回调有些微妙。下面是当客户端收到一个完整的文件时，它是如何发回一条消息的。
 
-```[[ type="fragment" name="send-deliver"]]
+```c
 zstr_sendm (self->pipe, "DELIVER");
 zstr_sendm (self->pipe, filename);
 zstr_sendf (self->pipe, "%s/%s", inbox, filename);
