@@ -2,23 +2,22 @@
 
 [**高级**-请求-回复]涵盖了ZeroMQ的请求-回复模式的高级用途,并附有工作实例.本章探讨了可靠性的一般问题,并在ZeroMQ的核心请求-回复模式之上建立了一套可靠的消息传递模式.
 
-在本章中,我们主要关注用户空间的请求-回复*模式,这些可重复使用的模式可以帮助你设计自己的ZeroMQ架构.
+在本章中,我们主要关注用户空间的请求-回复*模式*,这些可重复使用的模式可以帮助你设计自己的ZeroMQ架构.
 
 * *懒惰的海盗* 模式:来自客户端的可靠请求-回复
 * *简单的海盗* 模式:使用负载均衡进行可靠的请求-回复.
-* *偏执的海盗* 模式:可靠的请求-回复与心跳.
-* *Majordomo* 模式:面向服务的可靠队列
+* *偏执的海盗* 模式:带有心跳的可靠的请求-回复.
+* *管家* 模式:面向服务的可靠队列
 * *泰坦尼克号* 模式:基于磁盘/断开连接的可靠队列
 * *双星* 模式:主-备份服务器故障切换
-* *Freelance* 模式:无borkers的可靠请求-回复
+* *Freelance* 模式:无brokers的可靠请求-回复
 
 ## 什么是"可靠性"？
 
 大多数谈论"可靠性"的人并不真正了解他们的意思.我们只能从失败的角度来定义可靠性.也就是说,如果我们能够处理某一组定义明确的,可以理解的故障,那么对于这些故障来说,我们就是可靠的.没有更多,也没有更少.因此,让我们看看在一个分布式ZeroMQ应用程序中可能出现的故障原因,大致上按概率降序排列.
+* 应用程序代码是最故障的最大来源.它可能会崩溃并退出,冻结并停止对输入的响应,对其输入来说运行得太慢,耗尽所有内存,等等.
 
-* 应用程序代码是最糟糕的犯罪者.它可能会崩溃并退出,冻结并停止对输入的响应,对其输入来说运行得太慢,耗尽所有内存,等等.
-
-* 系统代码--比如我们使用ZeroMQ编写的borkers--会因为与应用程序代码相同的原因而死亡.系统代码*应该*比应用程序代码更可靠,但它仍然会崩溃和烧毁,特别是如果它试图为缓慢的客户端排定消息队列,就会耗尽内存.
+* 系统代码--比如我们使用ZeroMQ编写的brokers--会因为与应用程序代码相同的原因而死亡.系统代码*应该*比应用程序代码更可靠,但它仍然会崩溃和烧毁,特别是如果它试图为缓慢的客户端排定消息队列,就会耗尽内存.
 
 * 消息队列可能会溢出,通常是在系统代码中,这些代码已经学会粗暴地处理慢速客户端.当一个队列溢出时,它开始丢弃消息.所以我们会得到"丢失"的消息.
 
@@ -29,7 +28,6 @@
 * 网络可能会以异乎寻常的方式发生故障,例如,交换机上的一些端口可能死亡,网络的这些部分就无法访问.
 
 * 整个数据中心可能被雷电,地震,火灾或更普通的电力或冷却故障所袭击.
-
 要使一个软件系统完全可靠地应对*所有*这些可能的故障,是一项极其困难和昂贵的工作,这超出了本书的范围.
 
 因为上述列表中的前五种情况涵盖了大公司以外的99.9%的现实需求(根据我刚刚进行的一项高度科学的研究,它还告诉我78%的统计数据是当场编造的,此外,永远不要相信我们自己没有伪造的统计数据),这就是我们要研究的内容.如果你是一家大公司,有资金用于后两种情况,请立即联系我的公司! 我的海滨别墅后面有一个大洞,等待着被改造成一个行政游泳池.
@@ -40,27 +38,28 @@
 
 让我们逐一来看看.
 
-* 请求-回复:如果服务器死了(在处理一个请求的时候),客户端就会发现,因为它不会得到一个回复.然后,它可以一气之下放弃,等待并稍后再试,找到另一个服务器,如此类推.至于客户端的死亡,我们可以暂时把它当作"别人的问题"来处理.
+* `请求-回复:如果服务器死了(在处理一个请求的时候),客户端就会发现,因为它不会得到一个回复.然后,它可以一气之下放弃,等待并稍后再试,找到另一个服务器,如此类推.至于客户端的死亡,我们可以暂时把它当作"别人的问题"来处理`.
 
-* Pub-sub:如果客户端死了(已经得到了一些数据),服务器不会知道这件事.Pub-sub不会从客户端向服务器发送任何信息.但是,客户端可以通过请求-回复等方式与服务器进行带外联系,并要求"请重新发送我错过的一切".至于服务器的死亡,这不在这里的范围之内.订阅者也可以自我验证他们是否运行得太慢,如果他们运行得太慢,可以采取行动(例如,警告操作员和死亡).
+* `Pub-sub:如果客户端死了(已经得到了一些数据),服务器不会知道这件事.Pub-sub不会从客户端向服务器发送任何信息.但是,客户端可以通过请求-回复等方式与服务器进行额外联系,并要求"请重新发送我错过的一切".至于服务器的死亡,这不在这里的范围之内.订阅者也可以自我验证他们是否运行得太慢,如果他们运行得太慢,可以采取行动(例如,警告操作员和死亡)`.
 
-* 管道:如果一个工人死了(在工作时),通风设备不知道这件事.管道,就像时间的研磨齿轮,只在一个方向上工作.但下游的收集器可以检测到一个任务没有完成,并向通风器发送一个消息,说"嘿,重新发送任务324！" 如果通风器或收集器死了,无论哪个上游客户端最初发送的工作批次都会厌倦等待,并重新发送整个批次.这并不优雅,但系统代码确实不应该经常死掉,这一点很重要.
+* `管道:如果一个worker死了(在工作时),通风设备不知道这件事.管道,就像时间的研磨齿轮,只在一个方向上工作.但下游的收集器可以检测到一个任务没有完成,并向通风器发送一个消息,说"嘿,重新发送任务324！" 如果通风器或收集器死了,无论哪个上游客户端最初发送的工作批次都会厌倦等待,并重新发送整个批次.这并不优雅,但系统代码确实不应该经常死掉,这一点很重要`.
 
-在这一章中,我们将只关注请求-回复,这是可靠消息传递的低挂果实.
 
-基本的请求-回复模式(一个 REQ 客户端套接字向一个 REP 服务器套接字进行阻塞式发送/接收)在处理最常见的故障类型方面得分很低.如果服务器在处理请求时崩溃了,客户端就会永远挂起.如果网络丢失了请求或回复,客户端就会永远挂起.
+在这一章中,我们将只关注请求-回复,这是可靠消息传递的容易实现的目标.
 
-请求-回复仍然比TCP好得多,这要归功于ZeroMQ默默地重新连接对等体的能力,以及负载平衡消息等.但对于实际工作来说,它仍然不够好.唯一能让你真正相信基本的请求-回复模式的情况是在同一进程中的两个线程之间,那里没有网络或独立的服务器进程会死亡.
+基本的请求-回复模式(一个 REQ 客户端套接字向一个 REP 服务器套接字进行阻塞式发送/接收)在处理最常见的故障类型方面应用很少.如果服务器在处理请求时崩溃了,客户端就会永远挂起.如果网络丢失了请求或回复,客户端就会永远挂起.
 
-然而,只要做一点额外的工作,这个不起眼的模式就能成为分布式网络中实际工作的良好基础,我们得到了一组可靠的请求-回复(RRR)模式,我喜欢称之为*海盗*模式(我希望你最终会明白这个笑话).
+请求-回复仍然比TCP好得多,这要归功于ZeroMQ可以静默地重新连接对方,对消息进行负载平衡等等.但对于实际工作来说,它仍然不够好.唯一能让你真正信任 基本的请求-回复模式的情况是在同一进程中的两个线程之间,那里没有网络问题或独立的服务器进程死亡.
 
-根据我的经验,大概有三种方式来连接客户和服务器.每种方式都需要一种特定的可靠性方法.
+然而,只要做一点额外的工作,这个不起眼的模式就能成为分布式网络中实际良好工作的基础,我们得到了一组 *可靠的请求-回复*(RRR)模式,我喜欢称之为*海盗*模式(我希望你最终会明白这个笑话).
 
-* <mark><font color=darkred>多个客户端直接与一个服务器对话.用例:客户需要与之对话的单一知名服务器.我们旨在处理的故障类型:服务器崩溃和重新启动,以及网络断开.</font></mark>
+根据我的经验,大概有三种方式来连接客户端和服务器.每种方式都需要一种特定的可靠性方法.
 
-* <mark><font color=darkred>多个客户端与一个将工作分配给多个worker的broker交谈.用例:面向服务的事务处理.我们要处理的故障类型:工作器崩溃和重启,工作器繁忙循环,工作器过载,队列崩溃和重启,以及网络断开连接.</font></mark>
+* `多个客户端直接与一个服务器对话.用例:客户需要与一个已知的服务器进行通信对话.我们要处理的故障类型:服务器崩溃和重新启动以及网络断开.`
 
-* <mark><font color=darkred>多个客户端与多个服务器对话,没有中间代理.用例:分布式服务,如名称解析.我们旨在处理的故障类型:服务崩溃和重启,服务繁忙循环,服务过载,以及网络断开连接.</font></mark>
+* `多个客户端与一个将工作分配给多个worker的broker交互.用例:面向服务的事务处理.我们要处理的故障类型:worker崩溃和重启,worker繁忙循环,worker过载,队列崩溃和重启以及网络断开连接.`
+
+* `多个客户端与多个服务器对话,没有broker.用例:分布式服务,如名称解析.我们旨在处理的故障类型:服务崩溃和重启,服务繁忙循环,服务过载以及网络断开连接.`
 
 这些方法中的每一种都有其权衡之处,而且往往你会将它们混合起来.我们将详细研究这三种方法.
 
@@ -76,13 +75,12 @@
 
 蛮好的解决方法是在出现错误后关闭并重新打开REQ套接字.
 
-  <summary><mark><font color=darkred>Lazy Pirate client</font></mark></summary>
-
 ```c
+//Lazy Pirate client in C
 #include <czmq.h>
 #define REQUEST_TIMEOUT 2500 // msecs, (>1000!)
 #define REQUEST_RETRIES 3 // Before we abandon
-#define SERVER_ENDPOINT"tcp://localhost:5555"
+#define SERVER_ENDPOINT "tcp://localhost:5555"
 
 int main()
 {
@@ -95,15 +93,15 @@ int main()
     printf("Entering while loop...\n");
     while(retries_left) // interrupt needs to be handled
     {
-        // We send a request, then we get a reply
-        char request[10];
-        sprintf(request,"%d", ++sequence);
-        zstr_send(client, request);
+        // We send a req_char, then we get a reply
+        char req_char[10];
+        sprintf(req_char,"%d", ++sequence);
+        zstr_send(client, req_char);
         int expect_reply = 1;
         while(expect_reply)
         {
             printf("Expecting reply....\n");
-            zmq_pollitem_t items [] = {{zsock_resolve(client), 0, ZMQ_POLLIN, 0}};
+            zmq_pollitem_t items [] = `zsock_resolve(client), 0, ZMQ_POLLIN, 0`;
             printf("After polling\n");
             int rc = zmq_poll(items, 1, REQUEST_TIMEOUT * ZMQ_POLL_MSEC);
             printf("Polling Done.. \n");
@@ -112,7 +110,7 @@ int main()
             
             // Here we process a server reply and exit our loop if the
             // reply is valid. If we didn't get a reply we close the
-            // client socket, open it again and resend the request. We
+            // client socket, open it again and resend the req_char. We
             // try a number times before finally abandoning:
 
             if (items[0].revents & ZMQ_POLLIN)
@@ -146,7 +144,7 @@ int main()
                     zsock_destroy(&client);
                     printf("I: reconnecting to server...\n");
                     client = zsock_new_req(SERVER_ENDPOINT);
-                    zstr_send(client, request);
+                    zstr_send(client, req_char);
                 }
             }
         }
@@ -155,12 +153,11 @@ int main()
     }
 }
 ```
-</details>
 
-与匹配的服务器一起运行这个程序.
 
-  <summary><mark><font color=darkred>Lazy Pirate server</font></mark></summary>
-  
+和匹配的服务端(如下)一起运行.
+
+ 
 ```c
 //  Lazy Pirate server
 //  Binds REQ socket to tcp://*:5555
@@ -204,9 +201,11 @@ int main (void)
     return 0;
 }
 ```
-</details>
 
-```[[type="textdiagram" title="The Lazy Pirate Pattern"]]
+
+```
+简单慵懒海盗模式
+
 #-----------#   #-----------#   #-----------#
 |  Client   |   |  Client   |   |  Client   |
 +-----------+   +-----------+   +-----------+
@@ -304,54 +303,51 @@ E: server seems to be offline, abandoning
 #-----------#   #-----------#   #-----------#
 ```
 
-队列broker的基础是来自[#高级-请求-回复]的负载平衡代理.我们在处理死亡或阻塞的worker时,最*少需要做什么？事实证明,这是很难得的.我们在客户端已经有一个重试机制.因此,使用负载平衡模式将非常有效.这符合ZeroMQ的理念,即我们可以通过在中间插入天真的代理来扩展点对点模式,比如请求-回复[图].
+队列broker的基础是来自[#高级-请求-回复]的负载平衡代理.我们在处理死亡或阻塞的worker时 最*少*要做什么？事实证明,是惊人的少.我们在客户端已经有一个重试机制.因此,使用负载平衡模式将非常有效.这符合ZeroMQ的理念,即我们可以通过在中间插入代理来扩展点对点模式,比如请求-回复[图].
 
-我们不需要一个特殊的客户端；我们仍然在使用Lazy Pirate客户端.这里是队列,它与负载平衡代理的主要任务相同.
-
-
-  <summary><mark><font color=darkred>Simple Pirate broker</font></mark></summary>
+我们不需要一个特殊的client,仍然在使用 慵懒的海盗模式中(上面) 的客户端程序.这里是队列(queue),它与负载平衡代理的主要任务相同.
 
 ```c
-//  Simple Pirate broker
-//  This is identical to load-balancing pattern, with no reliability
-//  mechanisms. It depends on the client for recovery. Runs forever.
-
-#include"czmq.h"
-#define WORKER_READY  "\001"      //  Signals worker is ready
-
+//  简单海盗队列
+//  
+//  这个队列和load-balancing pattern完全一致，不存在任何可靠性机制，依靠client的重试来保证运行
+//
+#include "czmq.h"
+ 
+#define WORKER_READY   "\001"      //  消息：worker准备就绪
+ 
 int main (void)
 {
+    //  准备上下文和套接字
     zctx_t *ctx = zctx_new ();
     void *frontend = zsocket_new (ctx, ZMQ_ROUTER);
     void *backend = zsocket_new (ctx, ZMQ_ROUTER);
-    zsocket_bind (frontend,"tcp://*:5555");    //  For clients
-    zsocket_bind (backend, "tcp://*:5556");    //  For workers
-
-    //  Queue of available workers
+    zsocket_bind (frontend, "tcp://*:5555");    //  client端点
+    zsocket_bind (backend,  "tcp://*:5556");    //  worker端点
+ 
+    //  存放可用worker的队列
     zlist_t *workers = zlist_new ();
-    
-    //  The body of this example is exactly the same as lbbroker2.
-    //  .skip
+ 
     while (true) {
         zmq_pollitem_t items [] = {
             { backend,  0, ZMQ_POLLIN, 0 },
             { frontend, 0, ZMQ_POLLIN, 0 }
         };
-        //  Poll frontend only if we have available workers
+        //  当有可用的woker时，轮询前端端点
         int rc = zmq_poll (items, zlist_size (workers)? 2: 1, -1);
         if (rc == -1)
-            break;              //  Interrupted
-
-        //  Handle worker activity on backend
+            break;              //  中断
+ 
+        //  处理后端端点的worker消息
         if (items [0].revents & ZMQ_POLLIN) {
-            //  Use worker identity for load-balancing
+            //  使用worker的地址进行for load-balancing
             zmsg_t *msg = zmsg_recv (backend);
             if (!msg)
-                break;          //  Interrupted
+                break;          //  中断
             zframe_t *identity = zmsg_unwrap (msg);
             zlist_append (workers, identity);
-
-            //  Forward message to client if it's not a READY
+ 
+            //  如果消息不是READY，则转发给client
             zframe_t *frame = zmsg_first (msg);
             if (memcmp (zframe_data (frame), WORKER_READY, 1) == 0)
                 zmsg_destroy (&msg);
@@ -359,7 +355,7 @@ int main (void)
                 zmsg_send (&msg, frontend);
         }
         if (items [1].revents & ZMQ_POLLIN) {
-            //  Get client request, route to first available worker
+            //  获取client请求，转发给第一个可用的worker
             zmsg_t *msg = zmsg_recv (frontend);
             if (msg) {
                 zmsg_wrap (msg, (zframe_t *) zlist_pop (workers));
@@ -367,7 +363,7 @@ int main (void)
             }
         }
     }
-    //  When we're done, clean up properly
+    //  程序运行结束，进行清理
     while (zlist_size (workers)) {
         zframe_t *frame = (zframe_t *) zlist_pop (workers);
         zframe_destroy (&frame);
@@ -375,15 +371,11 @@ int main (void)
     zlist_destroy (&workers);
     zctx_destroy (&ctx);
     return 0;
-    //  .until
 }
 ```
-</details>
-
-这里是工作器,它接收懒惰海盗服务器并使其适应负载均衡模式(使用REQ"就绪"信号).
 
 
-  <summary><mark><font color=darkred>Simple Pirate worker</font></mark></summary>
+这里是worker,它接收懒惰海盗服务器并使其适应负载均衡模式(使用REQ"就绪"信号).
 
 ```c
 //  Simple Pirate worker
@@ -438,13 +430,15 @@ int main (void)
     return 0;
 }
 ```
-</details>
 
-要测试这一点,可以按任何顺序启动一些工作器,一个懒惰海盗客户端和队列.你会看到,工人最终都崩溃了,客户端重试,然后放弃了.队列永远不会停止,你可以无休止地重新启动工人和客户端.这种模式适用于任何数量的客户和worker.
 
-## 稳健可靠的排队(偏执狂海盗模式)
+要测试这个,可以按任意顺序启动 一些worker,一个懒惰海盗client和队列.你会看到,worker最终都崩溃了,client则重试然后放弃了.队列永远不会停止,你可以无休止地重新启动worker和client.这种模式适用于任何数量的client和worker.
 
-```[[type="textdiagram" title="The Paranoid Pirate Pattern"]]
+## 稳健可靠的队列(偏执狂海盗模式)
+
+```
+The Paranoid Pirate Pattern
+
 #-----------#   #-----------#   #-----------#
 |  Client   |   |  Client   |   |  Client   |
 +-----------+   +-----------+   +-----------+
@@ -480,357 +474,315 @@ int main (void)
 
 简单的海盗队列模式效果相当好,特别是因为它只是两个现有模式的组合.不过,它确实有一些弱点.
 
-* 它在面对队列崩溃和重启时并不健壮.客户端会恢复,但worker不会.虽然ZeroMQ会自动重新连接worker的套接字,但就新启动的队列而言,worker还没有发出准备好的信号,所以并不存在.为了解决这个问题,我们必须进行从队列到worker的心跳,这样worker就可以检测到队列何时消失了.
+* 它在面对队列(queue)崩溃和重启时并不健壮.client会恢复,但worker不会.虽然ZeroMQ会自动重新连接worker的套接字,但就新启动的队列而言,worker还没有发出准备好的信号,所以并不存在.为了解决这个问题,我们必须使用从queue到worker的心跳,这样worker就可以检测到队列何时消失了.
 
 * 队列不会检测到worker的失败,所以如果一个worker在空闲时死亡,队列无法将其从worker队列中移除,直到队列向它发出请求.客户端的等待和重试都是徒劳的.这不是一个严重的问题,但也不是很好.为了使其正常工作,我们从worker到队列进行心跳,以便队列可以在任何阶段检测到丢失的worker.
 
 我们将在一个适当的迂腐的偏执狂海盗模式中解决这些问题.
 
-我们之前为worker使用了一个REQ套接字.对于偏执狂海盗的工作器,我们将改用DEALER套接字[图].这样做的好处是,我们可以在任何时候发送和接收消息,而不是像REQ那样锁死的发送/接收.DEALER的缺点是我们必须做我们自己的信封管理(重新阅读[#高级-请求-回复]了解这个概念的背景).
+我们之前为worker使用了一个REQ套接字.对于偏执狂海盗的worker,我们将改用DEALER套接字[图].这样做的好处是,我们可以在任何时候发送和接收消息,而不是像REQ那样锁死的发送/接收.DEALER的缺点是我们必须做我们自己的信封envelope管理,(重新阅读[Chapter 3 - 高级 请求-回复模式] 了解这个envelope概念的背景).
 
-我们仍然在使用Lazy Pirate的客户端.这里是偏执狂海盗的队列broker.
+我们仍然在使用Lazy Pirate的客户端程序.这里是偏执狂海盗的队列broker.
 
-
-  <summary><mark><font color=darkred>Paranoid Pirate worker</font></mark></summary>
-
-```c
+```c++
 //  Paranoid Pirate queue
+//     Andreas Hoelzlwimmer <andreas.hoelzlwimmer@fh-hagenberg.at>
 
-#include"czmq.h"
+#include "zmsg.hpp"
+
+#include <stdint.h>
+#include <vector>
+
 #define HEARTBEAT_LIVENESS  3       //  3-5 is reasonable
 #define HEARTBEAT_INTERVAL  1000    //  msecs
 
-//  Paranoid Pirate Protocol constants
-#define PPP_READY      "\001"      //  Signals worker is ready
-#define PPP_HEARTBEAT  "\002"      //  Signals worker heartbeat
-
-//  .split worker class structure
-//  Here we define the worker class; a structure and a set of functions that
-//  act as constructor, destructor, and methods on worker objects:
+//  This defines one active worker in our worker queue
 
 typedef struct {
-    zframe_t *identity;         //  Identity of worker
-    char *id_string;            //  Printable identity
-    int64_t expiry;             //  Expires at this time
+    std::string identity;           //  Address of worker
+    int64_t     expiry;             //  Expires at this time
 } worker_t;
 
-//  Construct new worker
-static worker_t *
-s_worker_new (zframe_t *identity)
-{
-    worker_t *self = (worker_t *) zmalloc (sizeof (worker_t));
-    self->identity = identity;
-    self->id_string = zframe_strhex (identity);
-    self->expiry = zclock_time ()
-                 + HEARTBEAT_INTERVAL * HEARTBEAT_LIVENESS;
-    return self;
-}
-
-//  Destroy specified worker object, including identity frame.
+//  Insert worker at end of queue, reset expiry
+//  Worker must not already be in queue
 static void
-s_worker_destroy (worker_t **self_p)
+s_worker_append (std::vector<worker_t> &queue, std::string &identity)
 {
-    assert (self_p);
-    if (*self_p) {
-        worker_t *self = *self_p;
-        zframe_destroy (&self->identity);
-        free (self->id_string);
-        free (self);
-        *self_p = NULL;
-    }
-}
-
-//  .split worker ready method
-//  The ready method puts a worker to the end of the ready list:
-
-static void
-s_worker_ready (worker_t *self, zlist_t *workers)
-{
-    worker_t *worker = (worker_t *) zlist_first (workers);
-    while (worker) {
-        if (streq (self->id_string, worker->id_string)) {
-            zlist_remove (workers, worker);
-            s_worker_destroy (&worker);
+    bool found = false;
+    for (std::vector<worker_t>::iterator it = queue.begin(); it < queue.end(); it++) {
+        if (it->identity.compare(identity) == 0) {
+            std::cout << "E: duplicate worker identity " << identity.c_str() << std::endl;
+            found = true;
             break;
         }
-        worker = (worker_t *) zlist_next (workers);
     }
-    zlist_append (workers, self);
+    if (!found) {
+        worker_t worker;
+        worker.identity = identity;
+        worker.expiry = s_clock() + HEARTBEAT_INTERVAL * HEARTBEAT_LIVENESS;
+        queue.push_back(worker);
+    }
 }
 
-//  .split get next available worker
-//  The next method returns the next available worker identity:
-
-static zframe_t *
-s_workers_next (zlist_t *workers)
-{
-    worker_t *worker = zlist_pop (workers);
-    assert (worker);
-    zframe_t *frame = worker->identity;
-    worker->identity = NULL;
-    s_worker_destroy (&worker);
-    return frame;
-}
-
-//  .split purge expired workers
-//  The purge method looks for and kills expired workers. We hold workers
-//  from oldest to most recent, so we stop at the first alive worker:
-
+//  Remove worker from queue, if present
 static void
-s_workers_purge (zlist_t *workers)
+s_worker_delete (std::vector<worker_t> &queue, std::string &identity)
 {
-    worker_t *worker = (worker_t *) zlist_first (workers);
-    while (worker) {
-        if (zclock_time () < worker->expiry)
-            break;              //  Worker is alive, we're done here
-
-        zlist_remove (workers, worker);
-        s_worker_destroy (&worker);
-        worker = (worker_t *) zlist_first (workers);
+    for (std::vector<worker_t>::iterator it = queue.begin(); it < queue.end(); it++) {
+        if (it->identity.compare(identity) == 0) {
+            it = queue.erase(it);
+            break;
+         }
     }
 }
 
-//  .split main task
-//  The main task is a load-balancer with heartbeating on workers so we
-//  can detect crashed or blocked worker tasks:
+//  Reset worker expiry, worker must be present
+static void
+s_worker_refresh (std::vector<worker_t> &queue, std::string &identity)
+{
+    bool found = false;
+    for (std::vector<worker_t>::iterator it = queue.begin(); it < queue.end(); it++) {
+        if (it->identity.compare(identity) == 0) {
+           it->expiry = s_clock ()
+                 + HEARTBEAT_INTERVAL * HEARTBEAT_LIVENESS;
+           found = true;
+           break;
+        }
+    }
+    if (!found) {
+       std::cout << "E: worker " << identity << " not ready" << std::endl;
+    }
+}
+
+//  Pop next available worker off queue, return identity
+static std::string
+s_worker_dequeue (std::vector<worker_t> &queue)
+{
+    assert (queue.size());
+    std::string identity = queue[0].identity;
+    queue.erase(queue.begin());
+    return identity;
+}
+
+//  Look for & kill expired workers
+static void
+s_queue_purge (std::vector<worker_t> &queue)
+{
+    int64_t clock = s_clock();
+    for (std::vector<worker_t>::iterator it = queue.begin(); it < queue.end(); it++) {
+        if (clock > it->expiry) {
+           it = queue.erase(it)-1;
+        }
+    }
+}
 
 int main (void)
 {
-    zctx_t *ctx = zctx_new ();
-    void *frontend = zsocket_new (ctx, ZMQ_ROUTER);
-    void *backend = zsocket_new (ctx, ZMQ_ROUTER);
-    zsocket_bind (frontend,"tcp://*:5555");    //  For clients
-    zsocket_bind (backend, "tcp://*:5556");    //  For workers
+    s_version_assert (4, 0);
 
-    //  List of available workers
-    zlist_t *workers = zlist_new ();
+    //  Prepare our context and sockets
+    zmq::context_t context(1);
+    zmq::socket_t frontend(context, ZMQ_ROUTER);
+    zmq::socket_t backend (context, ZMQ_ROUTER);
+    frontend.bind("tcp://*:5555");    //  For clients
+    backend.bind ("tcp://*:5556");    //  For workers
+
+    //  Queue of available workers
+    std::vector<worker_t> queue;
 
     //  Send out heartbeats at regular intervals
-    uint64_t heartbeat_at = zclock_time () + HEARTBEAT_INTERVAL;
+    int64_t heartbeat_at = s_clock () + HEARTBEAT_INTERVAL;
 
-    while (true) {
-        zmq_pollitem_t items [] = {
-            { backend,  0, ZMQ_POLLIN, 0 },
+    while (1) {
+        zmq::pollitem_t items [] = {
+            { backend, 0, ZMQ_POLLIN, 0 },
             { frontend, 0, ZMQ_POLLIN, 0 }
         };
         //  Poll frontend only if we have available workers
-        int rc = zmq_poll (items, zlist_size (workers)? 2: 1,
-            HEARTBEAT_INTERVAL * ZMQ_POLL_MSEC);
-        if (rc == -1)
-            break;              //  Interrupted
+        if (queue.size()) {
+            zmq::poll (items, 2, HEARTBEAT_INTERVAL);
+        } else {
+            zmq::poll (items, 1, HEARTBEAT_INTERVAL);
+        }
 
         //  Handle worker activity on backend
         if (items [0].revents & ZMQ_POLLIN) {
-            //  Use worker identity for load-balancing
-            zmsg_t *msg = zmsg_recv (backend);
-            if (!msg)
-                break;          //  Interrupted
+            zmsg msg (backend);
+            std::string identity(msg.unwrap ());
 
-            //  Any sign of life from worker means it's ready
-            zframe_t *identity = zmsg_unwrap (msg);
-            worker_t *worker = s_worker_new (identity);
-            s_worker_ready (worker, workers);
-
-            //  Validate control message, or return reply to client
-            if (zmsg_size (msg) == 1) {
-                zframe_t *frame = zmsg_first (msg);
-                if (memcmp (zframe_data (frame), PPP_READY, 1)
-                &&  memcmp (zframe_data (frame), PPP_HEARTBEAT, 1)) {
-                    printf ("E: invalid message from worker");
-                    zmsg_dump (msg);
+            //  Return reply to client if it's not a control message
+            if (msg.parts () == 1) {
+                if (strcmp (msg.address (), "READY") == 0) {
+                    s_worker_delete (queue, identity);
+                    s_worker_append (queue, identity);
                 }
-                zmsg_destroy (&msg);
+                else {
+                   if (strcmp (msg.address (), "HEARTBEAT") == 0) {
+                       s_worker_refresh (queue, identity);
+                   } else {
+                       std::cout << "E: invalid message from " << identity << std::endl;
+                       msg.dump ();
+                   }
+                }
             }
-            else
-                zmsg_send (&msg, frontend);
+            else {
+                msg.send (frontend);
+                s_worker_append (queue, identity);
+            }
         }
         if (items [1].revents & ZMQ_POLLIN) {
             //  Now get next client request, route to next worker
-            zmsg_t *msg = zmsg_recv (frontend);
-            if (!msg)
-                break;          //  Interrupted
-            zframe_t *identity = s_workers_next (workers); 
-            zmsg_prepend (msg, &identity);
-            zmsg_send (&msg, backend);
+            zmsg msg (frontend);
+            std::string identity = std::string(s_worker_dequeue (queue));
+            msg.push_front((char*)identity.c_str());
+            msg.send (backend);
         }
-        //  .split handle heartbeating
-        //  We handle heartbeating after any socket activity. First, we send
-        //  heartbeats to any idle workers if it's time. Then, we purge any
-        //  dead workers:
-        if (zclock_time () >= heartbeat_at) {
-            worker_t *worker = (worker_t *) zlist_first (workers);
-            while (worker) {
-                zframe_send (&worker->identity, backend,
-                             ZFRAME_REUSE + ZFRAME_MORE);
-                zframe_t *frame = zframe_new (PPP_HEARTBEAT, 1);
-                zframe_send (&frame, backend, 0);
-                worker = (worker_t *) zlist_next (workers);
+
+        //  Send heartbeats to idle workers if it's time
+        if (s_clock () > heartbeat_at) {
+            for (std::vector<worker_t>::iterator it = queue.begin(); it < queue.end(); it++) {
+                zmsg msg ("HEARTBEAT");
+                msg.wrap (it->identity.c_str(), NULL);
+                msg.send (backend);
             }
-            heartbeat_at = zclock_time () + HEARTBEAT_INTERVAL;
+            heartbeat_at = s_clock () + HEARTBEAT_INTERVAL;
         }
-        s_workers_purge (workers);
+        s_queue_purge(queue);
     }
-    //  When we're done, clean up properly
-    while (zlist_size (workers)) {
-        worker_t *worker = (worker_t *) zlist_pop (workers);
-        s_worker_destroy (&worker);
-    }
-    zlist_destroy (&workers);
-    zctx_destroy (&ctx);
+    //  We never exit the main loop
+    //  But pretend to do the right shutdown anyhow
+    queue.clear();
     return 0;
 }
 ```
-</details>
 
-这里是工作器,它接收懒惰海盗服务器并使其适应负载均衡模式(使用REQ"就绪"信号).
+这里是worker,它接收懒惰海盗服务器并使其适应负载均衡模式(使用REQ"就绪"信号).
 
-该队列用worker的心跳来扩展负载平衡模式.跳心是那些"简单"的事情之一,但却很难做到正确.我稍后会解释更多关于这个问题.
+该队列用worker的心跳来扩展负载平衡模式.心跳是那些"简单"的事情之一,但却很难做到正确.我稍后会解释更多关于这个问题.
 
-下面是偏执狂海盗的工作器.
+下面是偏执狂海盗的worker.
 
-
-  <summary><mark><font color=darkred>Paranoid Pirate worker</font></mark></summary>
-
-```c
+```c++
 //  Paranoid Pirate worker
+//     Andreas Hoelzlwimmer <andreas.hoelzlwimmer@fh-hagenberg.at>
+//
+#include "zmsg.hpp"
 
-#include"czmq.h"
+#include <iomanip>
+
 #define HEARTBEAT_LIVENESS  3       //  3-5 is reasonable
 #define HEARTBEAT_INTERVAL  1000    //  msecs
 #define INTERVAL_INIT       1000    //  Initial reconnect
 #define INTERVAL_MAX       32000    //  After exponential backoff
 
-//  Paranoid Pirate Protocol constants
-#define PPP_READY      "\001"      //  Signals worker is ready
-#define PPP_HEARTBEAT  "\002"      //  Signals worker heartbeat
-
 //  Helper function that returns a new configured socket
-//  connected to the Paranoid Pirate queue
+//  connected to the Hello World server
+//
+std::string identity;
 
-static void *
-s_worker_socket (zctx_t *ctx) {
-    void *worker = zsocket_new (ctx, ZMQ_DEALER);
-    zsocket_connect (worker,"tcp://localhost:5556");
+static zmq::socket_t *
+s_worker_socket (zmq::context_t &context) {
+    zmq::socket_t * worker = new zmq::socket_t(context, ZMQ_DEALER);
+
+    //  Set random identity to make tracing easier
+    identity = s_set_id(*worker);
+    worker->connect ("tcp://localhost:5556");
+
+    //  Configure socket to not wait at close time
+    int linger = 0;
+    worker->setsockopt (ZMQ_LINGER, &linger, sizeof (linger));
 
     //  Tell queue we're ready for work
-    printf ("I: worker ready\n");
-    zframe_t *frame = zframe_new (PPP_READY, 1);
-    zframe_send (&frame, worker, 0);
+    std::cout << "I: (" << identity << ") worker ready" << std::endl;
+    s_send (*worker, "READY");
 
     return worker;
 }
 
-//  .split main task
-//  We have a single task that implements the worker side of the
-//  Paranoid Pirate Protocol (PPP). The interesting parts here are
-//  the heartbeating, which lets the worker detect if the queue has
-//  died, and vice versa:
-
 int main (void)
 {
-    zctx_t *ctx = zctx_new ();
-    void *worker = s_worker_socket (ctx);
+    s_version_assert (4, 0);
+    srandom ((unsigned) time (NULL));
+
+    zmq::context_t context (1);
+    zmq::socket_t * worker = s_worker_socket (context);
 
     //  If liveness hits zero, queue is considered disconnected
     size_t liveness = HEARTBEAT_LIVENESS;
     size_t interval = INTERVAL_INIT;
 
     //  Send out heartbeats at regular intervals
-    uint64_t heartbeat_at = zclock_time () + HEARTBEAT_INTERVAL;
+    int64_t heartbeat_at = s_clock () + HEARTBEAT_INTERVAL;
 
-    srandom ((unsigned) time (NULL));
     int cycles = 0;
-    while (true) {
-        zmq_pollitem_t items [] = { { worker,  0, ZMQ_POLLIN, 0 } };
-        int rc = zmq_poll (items, 1, HEARTBEAT_INTERVAL * ZMQ_POLL_MSEC);
-        if (rc == -1)
-            break;              //  Interrupted
+    while (1) {
+        zmq::pollitem_t items[] = {
+            {static_cast<void*>(*worker), 0, ZMQ_POLLIN, 0 } };
+        zmq::poll (items, 1, HEARTBEAT_INTERVAL);
 
         if (items [0].revents & ZMQ_POLLIN) {
             //  Get message
             //  - 3-part envelope + content -> request
-            //  - 1-part HEARTBEAT -> heartbeat
-            zmsg_t *msg = zmsg_recv (worker);
-            if (!msg)
-                break;          //  Interrupted
+            //  - 1-part "HEARTBEAT" -> heartbeat
+            zmsg msg (*worker);
 
-            //  .split simulating problems
-            //  To test the robustness of the queue implementation we 
-            //  simulate various typical problems, such as the worker
-            //  crashing or running very slowly. We do this after a few
-            //  cycles so that the architecture can get up and running
-            //  first:
-            if (zmsg_size (msg) == 3) {
+            if (msg.parts () == 3) {
+                //  Simulate various problems, after a few cycles
                 cycles++;
-                if (cycles > 3 && randof (5) == 0) {
-                    printf ("I: simulating a crash\n");
-                    zmsg_destroy (&msg);
+                if (cycles > 3 && within (5) == 0) {
+                    std::cout << "I: (" << identity << ") simulating a crash" << std::endl;
+                    msg.clear ();
                     break;
                 }
-                else
-                if (cycles > 3 && randof (5) == 0) {
-                    printf ("I: simulating CPU overload\n");
-                    sleep (3);
-                    if (zctx_interrupted)
-                        break;
+                else {
+                   if (cycles > 3 && within (5) == 0) {
+                      std::cout << "I: (" << identity << ") simulating CPU overload" << std::endl;
+                       sleep (5);
+                   }
                 }
-                printf ("I: normal reply\n");
-                zmsg_send (&msg, worker);
+                std::cout << "I: (" << identity << ") normal reply - " << msg.body() << std::endl;
+                msg.send (*worker);
                 liveness = HEARTBEAT_LIVENESS;
                 sleep (1);              //  Do some heavy work
-                if (zctx_interrupted)
-                    break;
-            }
-            else
-            //  .split handle heartbeats
-            //  When we get a heartbeat message from the queue, it means the
-            //  queue was (recently) alive, so we must reset our liveness
-            //  indicator:
-            if (zmsg_size (msg) == 1) {
-                zframe_t *frame = zmsg_first (msg);
-                if (memcmp (zframe_data (frame), PPP_HEARTBEAT, 1) == 0)
-                    liveness = HEARTBEAT_LIVENESS;
-                else {
-                    printf ("E: invalid message\n");
-                    zmsg_dump (msg);
-                }
-                zmsg_destroy (&msg);
             }
             else {
-                printf ("E: invalid message\n");
-                zmsg_dump (msg);
+               if (msg.parts () == 1
+               && strcmp (msg.body (), "HEARTBEAT") == 0) {
+                   liveness = HEARTBEAT_LIVENESS;
+               }
+               else {
+                   std::cout << "E: (" << identity << ") invalid message" << std::endl;
+                   msg.dump ();
+               }
             }
             interval = INTERVAL_INIT;
         }
         else
-        //  .split detecting a dead queue
-        //  If the queue hasn't sent us heartbeats in a while, destroy the
-        //  socket and reconnect. This is the simplest most brutal way of
-        //  discarding any messages we might have sent in the meantime:
         if (--liveness == 0) {
-            printf ("W: heartbeat failure, can't reach queue\n");
-            printf ("W: reconnecting in %zd msec...\n", interval);
-            zclock_sleep (interval);
+            std::cout << "W: (" << identity << ") heartbeat failure, can't reach queue" << std::endl;
+            std::cout << "W: (" << identity << ") reconnecting in " << interval << " msec..." << std::endl;
+            s_sleep (interval);
 
-            if (interval < INTERVAL_MAX)
+            if (interval < INTERVAL_MAX) {
                 interval *= 2;
-            zsocket_destroy (ctx, worker);
-            worker = s_worker_socket (ctx);
+            }
+            delete worker;
+            worker = s_worker_socket (context);
             liveness = HEARTBEAT_LIVENESS;
         }
+
         //  Send heartbeat to queue if it's time
-        if (zclock_time () > heartbeat_at) {
-            heartbeat_at = zclock_time () + HEARTBEAT_INTERVAL;
-            printf ("I: worker heartbeat\n");
-            zframe_t *frame = zframe_new (PPP_HEARTBEAT, 1);
-            zframe_send (&frame, worker, 0);
+        if (s_clock () > heartbeat_at) {
+            heartbeat_at = s_clock () + HEARTBEAT_INTERVAL;
+            std::cout << "I: (" << identity << ") worker heartbeat" << std::endl;
+            s_send (*worker, "HEARTBEAT");
         }
     }
-    zctx_destroy (&ctx);
+    delete worker;
     return 0;
 }
 ```
-</details>
+
 
 关于这个例子的一些评论.
 
@@ -853,17 +805,17 @@ lpclient &
 
 ## Heartbeating
 
-Heartbeating解决了知道一个对等体是活着还是死了的问题.这不是ZeroMQ特有的问题.TCP有一个很长的超时(30分钟左右),这意味着可能无法知道一个对等体是否已经死亡,被断开连接,或者在周末带着一箱伏特加,一个红发女郎和一个大额支出账户去了布拉格.
+Heartbeating解决了知道一个peer是活着还是死了的问题.这不是ZeroMQ特有的问题.TCP有一个很长的超时(30分钟左右),这意味着可能无法知道一个peer是否已经死亡,被断开连接,或者在周末带着一箱伏特加,一个红发女郎和一个大额支出账户去了布拉格.
 
-要把心跳搞好并不容易.在写偏执狂海盗的例子时,花了大约五个小时才使心跳正常.其余的请求-回复链可能需要10分钟.创造"假失败"特别容易,即当对等体决定他们被断开连接时,因为心跳没有被正确发送.
+要把心跳搞好并不容易.在写偏执狂海盗的例子时,花了大约五个小时才使心跳正常.其余的请求-回复链可能需要10分钟.创造"假失败"特别容易,即当peer决定他们被断开连接时,因为心跳没有被正确发送.
 
 我们来看看人们用ZeroMQ进行心跳时的三个主要答案.
 
 ### 甩掉它
 
-最常见的方法是根本不做心跳,并希望得到最好的结果.许多甚至是大多数ZeroMQ应用程序都是这样做的.ZeroMQ通过在许多情况下隐藏对等体来鼓励这种做法.这种方法会导致什么问题？
+最常见的方法是根本不做心跳,并希望得到最好的结果.许多甚至是大多数ZeroMQ应用程序都是这样做的.ZeroMQ通过在许多情况下隐藏peer来鼓励这种做法.这种方法会导致什么问题？
 
-* 当我们在跟踪对等体的应用程序中使用ROUTER套接字时,当对等体断开连接和重新连接时,应用程序将泄漏内存(应用程序为每个对等体持有的资源),并且变得越来越慢.
+* 当我们在跟踪peer的应用程序中使用ROUTER套接字时,当peer断开连接和重新连接时,应用程序将泄漏内存(应用程序为每个peer持有的资源),并且变得越来越慢.
 
 * 当我们使用基于SUB-或DEALER的数据接收者时,我们无法区分好的沉默(没有数据)和坏的沉默(另一端死亡).当接收者知道对方死了,它可以例如切换到一个备份路由.
 
@@ -871,7 +823,7 @@ Heartbeating解决了知道一个对等体是活着还是死了的问题.这不�
 
 ### 单向心跳
 
-第二个选择是每隔一秒左右从每个节点向其对等体发送一个心跳信息.当一个节点在某个超时时间内(通常是几秒钟)没有听到另一个节点的消息时,它将把这个对等体视为死亡.听起来不错,对吗？不幸的是,不是.这在某些情况下是可行的,但在其他情况下有令人讨厌的边缘情况.
+第二个选择是每隔一秒左右从每个节点向其peer发送一个心跳信息.当一个节点在某个超时时间内(通常是几秒钟)没有听到另一个节点的消息时,它将把这个peer视为死亡.听起来不错,对吗？不幸的是,不是.这在某些情况下是可行的,但在其他情况下有令人讨厌的边缘情况.
 
 对于pub-sub,这确实有效,而且是你可以使用的唯一模式.SUB套接字不能回话给PUB套接字,但是PUB套接字可以很高兴的向他们的订阅者发送"我还活着"的消息.
 
@@ -881,24 +833,24 @@ Heartbeating解决了知道一个对等体是活着还是死了的问题.这不�
 
 * 当我们发送大量数据时,它可能不准确,因为心跳会在这些数据后面延迟.如果心跳被延迟了,你可能会得到错误的超时和由于网络拥堵而导致的断线.因此,总是把*任何*传入的数据当作心跳,无论发送方是否优化出心跳.
 
-* 虽然pub-sub模式会放弃消失的接收者的消息,但PUSH和DEALER套接字会排队.因此,如果你向一个已经死亡的对等体发送心跳,而它又回来了,它将得到你发送的所有心跳,这可能是成千上万的.哇哦,哇哦!
+* 虽然pub-sub模式会放弃消失的接收者的消息,但PUSH和DEALER套接字会队列.因此,如果你向一个已经死亡的peer发送心跳,而它又回来了,它将得到你发送的所有心跳,这可能是成千上万的.哇哦,哇哦!
 
-* 这个设计假设心跳超时在整个网络中是一样的.但这并不准确.有些对等体需要非常积极的心跳,以便迅速发现故障.而有些则希望心跳非常轻松,以便让沉睡的网络躺下,节省电力.
+* 这个设计假设心跳超时在整个网络中是一样的.但这并不准确.有些peer需要非常积极的心跳,以便迅速发现故障.而有些则希望心跳非常轻松,以便让沉睡的网络躺下,节省电力.
 
 ### 乒乓式心跳
 
-第三种选择是使用乒乓对话.一个对等体向另一个对等体发送一个ping命令,另一个对等体用一个pong命令进行回复.两个命令都没有任何有效载荷.ping和pong是不相关的.因为在一些网络中,"客户"和"服务器"的角色是任意的,我们通常规定任何一个对等体实际上都可以发送一个ping,并期望得到一个pong的响应.然而,由于超时取决于动态客户端最熟悉的网络拓扑结构,通常是客户端ping服务器.
+第三种选择是使用乒乓对话.一个peer向另一个peer发送一个ping命令,另一个peer用一个pong命令进行回复.两个命令都没有任何有效载荷.ping和pong是不相关的.因为在一些网络中,"客户"和"服务器"的角色是任意的,我们通常规定任何一个peer实际上都可以发送一个ping,并期望得到一个pong的响应.然而,由于超时取决于动态客户端最熟悉的网络拓扑结构,通常是客户端ping服务器.
 
-这适用于所有基于ROUTER的经纪商.我们在第二个模型中使用的同样的优化使这个工作变得更好:将任何传入的数据视为pong,并且只在不发送数据时发送ping.
+这适用于所有基于ROUTER的broker.我们在第二个模型中使用的同样的优化使这个工作变得更好:将任何传入的数据视为pong,并且只在不发送数据时发送ping.
 
 ### 偏执狂海盗的心跳
 
-对于偏执狂海盗,我们选择了第二种方法.这可能不是最简单的选择:如果今天设计这个,我可能会尝试用ping-pong的方法来代替.然而,其原理是相似的.心跳信息在两个方向上都是异步流动的,任何一个对等体都可以决定另一个是"死"的,并停止与它对话.
+对于偏执狂海盗,我们选择了第二种方法.这可能不是最简单的选择:如果今天设计这个,我可能会尝试用ping-pong的方法来代替.然而,其原理是相似的.心跳信息在两个方向上都是异步流动的,任何一个peer都可以决定另一个是"死"的,并停止与它对话.
 
 在Worker中,我们是这样处理来自队列的心跳的.
 
 * 我们计算一个*有效期*,也就是在决定队列死亡之前,我们还能错过多少次心跳.它从3开始,每错过一次心跳我们就递减一次.
-* 在{{zmq_poll}}循环中,我们每次等待一秒钟,这就是我们的心跳间隔.
+* 在`zmq_poll`循环中,我们每次等待一秒钟,这就是我们的心跳间隔.
 * 如果在这段时间内有任何来自队列的消息,我们就将我们的有效性重置为3.
 * 如果在这段时间内没有消息,我们就倒数我们的有效期.
 * 如果有效性达到零,我们认为队列已经死亡.
@@ -907,25 +859,23 @@ Heartbeating解决了知道一个对等体是活着还是死了的问题.这不�
 
 而这就是我们处理心跳的方式,*到*队列.
 
-* 我们计算何时发送下一次心跳；这是一个单一的变量,因为我们是与一个对等体,即队列对话.
-* 在{{zmq_poll}}循环中,只要我们通过这个时间,我们就向队列发送心跳.
+* 我们计算何时发送下一次心跳；这是一个单一的变量,因为我们是与一个peer,即队列对话.
+* 在`zmq_poll`循环中,只要我们通过这个时间,我们就向队列发送心跳.
 
 下面是worker的基本心跳代码.
 
-  <summary><mark><font color=darkred>查看</font></mark></summary>
-
 ```c++
-#define HEARTBEAT_LIVENESS  3       *  3-5 is reasonable
-#define HEARTBEAT_INTERVAL  1000    *  msecs
-#define INTERVAL_INIT       1000    *  Initial reconnect
-#define INTERVAL_MAX       32000    *  After exponential backoff
+#define HEARTBEAT_LIVENESS  3       //3-5 is reasonable
+#define HEARTBEAT_INTERVAL  1000    //msecs
+#define INTERVAL_INIT       1000    //Initial reconnect
+#define INTERVAL_MAX       32000    //After exponential backoff
 
-...
-*  If liveness hits zero, queue is considered disconnected
+
+//If liveness hits zero, queue is considered disconnected
 size_t liveness = HEARTBEAT_LIVENESS;
 size_t interval = INTERVAL_INIT;
 
-*  Send out heartbeats at regular intervals
+//Send out heartbeats at regular intervals
 uint64_t heartbeat_at = zclock_time () + HEARTBEAT_INTERVAL;
 
 while (true) {
@@ -933,7 +883,7 @@ while (true) {
     int rc = zmq_poll (items, 1, HEARTBEAT_INTERVAL * ZMQ_POLL_MSEC);
 
     if (items [0].revents & ZMQ_POLLIN) {
-        *  Receive any message from queue
+        //Receive any message from queue
         liveness = HEARTBEAT_LIVENESS;
         interval = INTERVAL_INIT;
     }
@@ -943,43 +893,43 @@ while (true) {
         if (interval < INTERVAL_MAX)
             interval *= 2;
         zsocket_destroy (ctx, worker);
-        ...
+        //...
         liveness = HEARTBEAT_LIVENESS;
     }
-    *  Send heartbeat to queue if it's time
+    //Send heartbeat to queue if it's time
     if (zclock_time () > heartbeat_at) {
         heartbeat_at = zclock_time () + HEARTBEAT_INTERVAL;
-        *  Send heartbeat message to queue
+        //Send heartbeat message to queue
     }
 }
 ```
-</details>
+
 
 队列也是如此,但为每个worker管理了一个过期时间.
 
 这里有一些关于你自己心跳的实施的提示.
 
-* 使用{zmq_poll}}或反应器作为应用程序的主要任务的核心.
+* 使用`zmq_poll`或reactor作为应用程序的主要任务的核心.
 
-* 从建立对等体之间的心跳开始,通过模拟失败来测试它,然后*建立其余的消息流.之后再添加心跳则要麻烦得多.
+* 从建立peer之间的心跳开始,通过模拟失败来测试它,*然后*建立其余的消息流.之后再添加心跳则要麻烦得多.
 
-* 使用简单的跟踪,即打印到控制台,以使其正常工作.为了帮助你追踪对等体之间的消息流,使用一个转储方法,如zmsg提供的,并对你的消息进行增量编号,这样你就可以看到是否有空隙.
+* 使用简单的跟踪,即打印到控制台,以使其正常工作.为了帮助你追踪peer之间的消息流,使用一个转储方法,如zmsg提供的,并对你的消息进行增量编号,这样你就可以看到是否有空隙.
 
-* 在实际应用中,心跳必须是可配置的,通常是与对等体协商的.有些对等体需要积极的心跳,低至10msecs.另一些对等体则距离较远,希望心跳时间高达 30 秒.
+* 在实际应用中,心跳必须是可配置的,通常是与peer协商的.有些peer需要积极的心跳,低至10msecs.另一些peer则更长,希望心跳时间高达 30 秒.
 
-* 如果你对不同的对等体有不同的心跳间隔,你的投票超时应该是其中最低的(最短的时间).不要使用无限的超时.
+* 如果你对不同的peer有不同的心跳间隔,你的投票超时应该是其中最低的(最短的时间).不要使用无限的超时.
 
-* 在你用来发送消息的同一个套接字上进行心跳,这样你的心跳也可以作为一个*keep-alive*来阻止网络连接变质(有些防火墙会对无声连接不友好).
+* 在你用来发送消息的同一个套接字上进行心跳,这样你的心跳也可以作为一个*keep-alive*来阻止网络连接变质(有些防火墙会对silent连接不友好).
 
-## 契约和协议
+## 约定和协议
 
-如果你注意到了,你会意识到偏执狂海盗与简单海盗是不能互通的,因为有心跳.但我们如何定义"互操作性"呢？为了保证互操作性,我们需要一种契约,一种让不同的团队在不同的时间和地点编写的代码能保证一起工作的协议.我们把这称为"协议".
+如果你注意到了,你会意识到偏执狂海盗与简单海盗是不能互通的,因为有心跳.但我们如何定义"互操作性"呢？为了保证互操作性,我们需要一种约定,一种让不同的团队在不同的时间和地点编写的代码能保证一起工作的协议.我们把这称为"协议".
 
 在没有规范的情况下进行实验是很有趣的,但对于真正的应用来说,这不是一个合理的基础.如果我们想用另一种语言写一个worker,会发生什么？我们必须阅读代码来了解事情是如何进行的吗？如果我们因为某些原因想改变协议怎么办？即使是一个简单的协议,如果它是成功的,也会不断发展,变得更加复杂.
 
-缺乏合同是一个一次性应用的肯定标志.因此,让我们为这个协议写一个合同.我们怎么做呢？
+一个缺乏约定的应用程序一定是不可复用的，所以让我们来为这个协议写一个规范，怎么做呢？
 
-在[http://rfc.zeromq.org rfc.zeromq.org]有一个wiki,我们特别将其作为公共ZeroMQ合约的家园.
+在[http://rfc.zeromq.org rfc.zeromq.org]有一个wiki,我们特别将其作为ZeroMQ协议的家园.
 要创建一个新的规范,如果需要的话,在wiki上注册,然后按照说明操作.这是相当简单的,尽管写技术文本不是每个人都喜欢的.
 
 我花了大约十五分钟来起草新的[http://rfc.zeromq.org/spec:6 Pirate Pattern Protocol].它不是一个大的规范,但它确实捕捉到了足够的信息,可以作为争论的基础("你的队列不兼容PPP；请修复它！").
@@ -988,11 +938,14 @@ while (true) {
 
 * 在READY命令中应该有一个协议版本号,这样就有可能区分不同版本的PPP.
 
-* 现在,READY和HEARTBEAT并没有完全区别于请求和回复.为了使它们与众不同,我们需要一个包括"消息类型"部分的消息结构.
+* 现在,READY和HEARTBEAT并没有完全区别于请求和回复.要区分他们，需要新建一个消息结构，其中包含“消息类型”这一信息。
 
-## 面向服务的可靠排队(Majordomo模式)
 
-```[[type="textdiagram" title="The Majordomo Pattern"]]
+## 面向服务的可靠队列(管家模式)
+
+```
+管家模式
+
 #-----------#   #-----------#   #-----------#
 |  Client   |   |  Client   |   |  Client   |
 '-----+-----'   '-----+-----'   '-----+-----'
@@ -1008,32 +961,32 @@ while (true) {
       .---------------+---------------.
       |               |               |
 .-----+-----.   .-----+-----.   .-----+-----.
-| "Water"  |   |  "Tea"   |   |"Coffee"  |
+|  "Water"  |   |   "Tea"   |   | "Coffee"  |
 +-----------+   +-----------+   +-----------+
 |  Worker   |   |  Worker   |   |  Worker   |
 #-----------#   #-----------#   #-----------#
 ```
 
 
-进步的好处是,当律师和委员会不参与时,它发生得非常快.[http://rfc.zeromq.org/spec:7 一页纸的MDP规范]将PPP变成了更坚实的东西[图].这就是我们应该如何设计复杂的架构:从写下合同开始,然后才**写软件来实现它们.
+进步的好处是,当律师和委员会不参与时,它发生得非常快.[http://rfc.zeromq.org/spec:7 一页纸的MDP规范]将PPP变成了更坚实的东西[图].这就是我们应该如何设计复杂的架构:从写下合同开始,*然后*才写软件来实现它们.
 
-Majordomo协议(MDP)以一种有趣的方式对PPP进行了扩展和改进:它在客户端发送的请求中增加了一个"服务名称",并要求worker注册特定的服务.添加服务名称将我们的偏执狂海盗队列变成了一个面向服务的borkers.MDP的好处是,它来自于工作代码,一个更简单的祖先协议(PPP),以及一套精确的改进,每个都解决了一个明确的问题.这使得它很容易起草.
+管家协议(MDP)以一种有趣的方式对PPP进行了扩展和改进:它在客户端发送的请求中增加了一个"服务名称",并要求worker注册特定的服务.添加服务名称将我们的偏执狂海盗队列变成了一个面向服务的brokers.MDP的好处是,它来自于工作代码,一个更简单的祖先协议(PPP),以及一套精确的改进,每个都解决了一个明确的问题.这使得它很容易起草.
 
-为了实现Majordomo,我们需要为客户端和worker编写一个框架.要求每个应用开发者阅读规范并使其工作,这实在是不理智的,因为他们可以使用一个更简单的API来为他们做工作.
+为了实现管家,我们需要为客户端和worker编写一个框架.要求每个应用开发者 必须阅读规范并使其工作是不合适的,因为他们可以使用一个更简单的API来为工作.
 
 因此,虽然我们的第一个合同(MDP本身)定义了我们的分布式架构的各个部分是如何相互交谈的,但我们的第二个合同定义了用户应用程序如何与我们将要设计的技术框架交谈.
 
-Majordomo有两个部分,一个是客户端,一个是worker端.因为我们将同时编写客户端和工作端应用程序,所以我们将需要两个API.下面是一个客户端API的草图,使用一个简单的面向对象的方法.
+管家有两个部分,一个是client,一个是worker端.因为我们将同时编写客户端和工作端应用程序,所以我们将需要两个API.下面是一个客户端API的草图,使用一个简单的面向对象的方法.
 
-```[[type="fragment" name="mdclient"]]
+```c++
 mdcli_t *mdcli_new     (char *broker);
 void     mdcli_destroy (mdcli_t **self_p);
 zmsg_t  *mdcli_send    (mdcli_t *self, char *service, zmsg_t **request_p);
 ```
 
-就是这样.我们向borkers打开一个会话,发送一个请求信息,得到一个回复信息,并最终关闭连接.这里有一个Worker API的草图.
+就是这样.我们向brokers打开一个会话,发送一个请求信息,得到一个回复信息,并最终关闭连接.这里有一个Worker API的草图.
 
-```[[type="fragment" name="mdworker"]]
+```c++
 mdwrk_t *mdwrk_new (char *broker,char *service).
 void mdwrk_destroy (mdwrk_t **self_p).
 zmsg_t *mdwrk_recv (mdwrk_t *self, zmsg_t *reply);
@@ -1041,10 +994,10 @@ zmsg_t *mdwrk_recv (mdwrk_t *self, zmsg_t *reply);
 
 这或多或少是对称的,但worker的对话有点不同.worker第一次做recv()时,会传递一个空回复.此后,它传递当前的回复,并获得一个新的请求.
 
-客户端和workerAPI的构建相当简单,因为它们在很大程度上是基于我们已经开发的Paranoid Pirate代码.下面是客户端的API.
+client和worker API的构建相当简单,因为它们在很大程度上是基于我们已经开发的Paranoid Pirate代码.下面是客户端的API.
 
 ```c
-//  mdcliapi class - Majordomo Protocol Client API
+//  mdcliapi class - 管家 Protocol Client API
 //  Implements the MDP/Worker spec at http://rfc.zeromq.org/spec:7.
 
 #include"mdcliapi.h"
@@ -1132,10 +1085,8 @@ mdcli_set_retries (mdcli_t *self, int retries)
 }
 
 //  .split send request and wait for reply
-//  Here is the {{send}} method. It sends a request to the broker and gets
-//  a reply even if it has to retry several times. It takes ownership of 
-//  the request message, and destroys it when sent. It returns the reply
-//  message, or NULL if there was no reply after multiple attempts:
+//  这里是`send`方法。它向经纪人发送一个请求，即使要重试几次也能得到回复。
+//  它拥有请求信息的所有权，并在发送时销毁它。它返回回复信息，如果多次尝试后没有回复，则返回NULL
 
 zmsg_t *
 mdcli_send (mdcli_t *self, char *service, zmsg_t **request_p)
@@ -1162,9 +1113,9 @@ mdcli_send (mdcli_t *self, char *service, zmsg_t **request_p)
             { self->client, 0, ZMQ_POLLIN, 0 }
         };
         //  .split body of send 
-        //  On any blocking call, {{libzmq}} will return -1 if there was
+        //  On any blocking call, `libzmq` will return -1 if there was
         //  an error; we could in theory check for different error codes,
-        //  but in practice it's OK to assume it was {{EINTR}} (Ctrl-C):
+        //  but in practice it's OK to assume it was `EINTR` (Ctrl-C):
         
         int rc = zmq_poll (items, 1, self->timeout * ZMQ_POLL_MSEC);
         if (rc == -1)
@@ -1213,7 +1164,7 @@ mdcli_send (mdcli_t *self, char *service, zmsg_t **request_p)
 让我们看看客户端API的运行情况,以一个测试程序为例,做100K的请求-回复循环.
 
 ```c
-//  Majordomo Protocol client example
+//  管家 Protocol client example
 //  Uses the mdcli API to hide all MDP aspects
 
 //  Lets us build this source without creating a library
@@ -1243,7 +1194,7 @@ int main (int argc, char *argv [])
 这里是worker的API.
 
 ```c
-//  mdwrkapi class - Majordomo Protocol Worker API
+//  mdwrkapi class - 管家 Protocol Worker API
 //  Implements the MDP/Worker spec at http://rfc.zeromq.org/spec:7.
 
 #include"mdwrkapi.h"
@@ -1382,7 +1333,7 @@ mdwrk_set_reconnect (mdwrk_t *self, int reconnect)
 }
 
 //  .split recv method
-//  This is the {{recv}} method; it's a little misnamed because it first sends
+//  This is the `recv` method; it's a little misnamed because it first sends
 //  any reply and then waits for a new request. If you have a better name
 //  for this, let me know.
 
@@ -1477,256 +1428,51 @@ mdwrk_recv (mdwrk_t *self, zmsg_t **reply_p)
 
 让我们通过一个实现回声服务的测试程序的例子,来看看worker API的运行情况.
 
-```c
-//  mdwrkapi class - Majordomo Protocol Worker API
-//  Implements the MDP/Worker spec at http://rfc.zeromq.org/spec:7.
+```c++
+//
+//  Majordomo Protocol worker example
+//  Uses the mdwrk API to hide all MDP aspects
+//
+//  Lets us 'build mdworker' and 'build all'
+//
+//     Andreas Hoelzlwimmer <andreas.hoelzlwimmer@fh-hagenberg.at>
+//
+#include "mdwrkapi.hpp"
 
-#include"mdwrkapi.h"
-
-//  Reliability parameters
-#define HEARTBEAT_LIVENESS  3       //  3-5 is reasonable
-
-//  .split worker class structure
-//  This is the structure of a worker API instance. We use a pseudo-OO
-//  approach in a lot of the C examples, as well as the CZMQ binding:
-
-//  Structure of our class
-//  We access these properties only via class methods
-
-struct _mdwrk_t {
-    zctx_t *ctx;                //  Our context
-    char *broker;
-    char *service;
-    void *worker;               //  Socket to broker
-    int verbose;                //  Print activity to stdout
-
-    //  Heartbeat management
-    uint64_t heartbeat_at;      //  When to send HEARTBEAT
-    size_t liveness;            //  How many attempts left
-    int heartbeat;              //  Heartbeat delay, msecs
-    int reconnect;              //  Reconnect delay, msecs
-
-    int expect_reply;           //  Zero only at start
-    zframe_t *reply_to;         //  Return identity, if any
-};
-
-//  .split utility functions
-//  We have two utility functions; to send a message to the broker and
-//  to (re)connect to the broker:
-
-//  Send message to broker
-//  If no msg is provided, creates one internally
-
-static void
-s_mdwrk_send_to_broker (mdwrk_t *self, char *command, char *option,
-                        zmsg_t *msg)
+int main (int argc, char *argv [])
 {
-    msg = msg? zmsg_dup (msg): zmsg_new ();
+    int verbose = (argc > 1 && strcmp (argv [1], "-v") == 0);
+    mdwrk session ("tcp://localhost:5555", "echo", verbose);
 
-    //  Stack protocol envelope to start of message
-    if (option)
-        zmsg_pushstr (msg, option);
-    zmsg_pushstr (msg, command);
-    zmsg_pushstr (msg, MDPW_WORKER);
-    zmsg_pushstr (msg,"");
-
-    if (self->verbose) {
-        zclock_log ("I: sending %s to broker",
-            mdps_commands [(int) *command]);
-        zmsg_dump (msg);
-    }
-    zmsg_send (&msg, self->worker);
-}
-
-//  Connect or reconnect to broker
-
-void s_mdwrk_connect_to_broker (mdwrk_t *self)
-{
-    if (self->worker)
-        zsocket_destroy (self->ctx, self->worker);
-    self->worker = zsocket_new (self->ctx, ZMQ_DEALER);
-    zmq_connect (self->worker, self->broker);
-    if (self->verbose)
-        zclock_log ("I: connecting to broker at %s...", self->broker);
-
-    //  Register service with broker
-    s_mdwrk_send_to_broker (self, MDPW_READY, self->service, NULL);
-
-    //  If liveness hits zero, queue is considered disconnected
-    self->liveness = HEARTBEAT_LIVENESS;
-    self->heartbeat_at = zclock_time () + self->heartbeat;
-}
-
-//  .split constructor and destructor
-//  Here we have the constructor and destructor for our mdwrk class:
-
-//  Constructor
-
-mdwrk_t *
-mdwrk_new (char *broker,char *service, int verbose)
-{
-    assert (broker);
-    assert (service);
-
-    mdwrk_t *self = (mdwrk_t *) zmalloc (sizeof (mdwrk_t));
-    self->ctx = zctx_new ();
-    self->broker = strdup (broker);
-    self->service = strdup (service);
-    self->verbose = verbose;
-    self->heartbeat = 2500;     //  msecs
-    self->reconnect = 2500;     //  msecs
-
-    s_mdwrk_connect_to_broker (self);
-    return self;
-}
-
-//  Destructor
-
-void
-mdwrk_destroy (mdwrk_t **self_p)
-{
-    assert (self_p);
-    if (*self_p) {
-        mdwrk_t *self = *self_p;
-        zctx_destroy (&self->ctx);
-        free (self->broker);
-        free (self->service);
-        free (self);
-        *self_p = NULL;
-    }
-}
-
-//  .split configure worker
-//  We provide two methods to configure the worker API. You can set the
-//  heartbeat interval and retries to match the expected network performance.
-
-//  Set heartbeat delay
-
-void
-mdwrk_set_heartbeat (mdwrk_t *self, int heartbeat)
-{
-    self->heartbeat = heartbeat;
-}
-
-//  Set reconnect delay
-
-void
-mdwrk_set_reconnect (mdwrk_t *self, int reconnect)
-{
-    self->reconnect = reconnect;
-}
-
-//  .split recv method
-//  This is the {{recv}} method; it's a little misnamed because it first sends
-//  any reply and then waits for a new request. If you have a better name
-//  for this, let me know.
-
-//  Send reply, if any, to broker and wait for next request.
-
-zmsg_t *
-mdwrk_recv (mdwrk_t *self, zmsg_t **reply_p)
-{
-    //  Format and send the reply if we were provided one
-    assert (reply_p);
-    zmsg_t *reply = *reply_p;
-    assert (reply || !self->expect_reply);
-    if (reply) {
-        assert (self->reply_to);
-        zmsg_wrap (reply, self->reply_to);
-        s_mdwrk_send_to_broker (self, MDPW_REPLY, NULL, reply);
-        zmsg_destroy (reply_p);
-    }
-    self->expect_reply = 1;
-
-    while (true) {
-        zmq_pollitem_t items [] = {
-            { self->worker,  0, ZMQ_POLLIN, 0 } };
-        int rc = zmq_poll (items, 1, self->heartbeat * ZMQ_POLL_MSEC);
-        if (rc == -1)
-            break;              //  Interrupted
-
-        if (items [0].revents & ZMQ_POLLIN) {
-            zmsg_t *msg = zmsg_recv (self->worker);
-            if (!msg)
-                break;          //  Interrupted
-            if (self->verbose) {
-                zclock_log ("I: received message from broker:");
-                zmsg_dump (msg);
-            }
-            self->liveness = HEARTBEAT_LIVENESS;
-
-            //  Don't try to handle errors, just assert noisily
-            assert (zmsg_size (msg) >= 3);
-
-            zframe_t *empty = zmsg_pop (msg);
-            assert (zframe_streq (empty,""));
-            zframe_destroy (&empty);
-
-            zframe_t *header = zmsg_pop (msg);
-            assert (zframe_streq (header, MDPW_WORKER));
-            zframe_destroy (&header);
-
-            zframe_t *command = zmsg_pop (msg);
-            if (zframe_streq (command, MDPW_REQUEST)) {
-                //  We should pop and save as many addresses as there are
-                //  up to a null part, but for now, just save one...
-                self->reply_to = zmsg_unwrap (msg);
-                zframe_destroy (&command);
-                //  .split process message
-                //  Here is where we actually have a message to process; we
-                //  return it to the caller application:
-                
-                return msg;     //  We have a request to process
-            }
-            else
-            if (zframe_streq (command, MDPW_HEARTBEAT))
-                ;               //  Do nothing for heartbeats
-            else
-            if (zframe_streq (command, MDPW_DISCONNECT))
-                s_mdwrk_connect_to_broker (self);
-            else {
-                zclock_log ("E: invalid input message");
-                zmsg_dump (msg);
-            }
-            zframe_destroy (&command);
-            zmsg_destroy (&msg);
+    zmsg *reply = 0;
+    while (1) {
+        zmsg *request = session.recv (reply);
+        if (request == 0) {
+            break;              //  Worker was interrupted
         }
-        else
-        if (--self->liveness == 0) {
-            if (self->verbose)
-                zclock_log ("W: disconnected from broker - retrying...");
-            zclock_sleep (self->reconnect);
-            s_mdwrk_connect_to_broker (self);
-        }
-        //  Send HEARTBEAT if it's time
-        if (zclock_time () > self->heartbeat_at) {
-            s_mdwrk_send_to_broker (self, MDPW_HEARTBEAT, NULL, NULL);
-            self->heartbeat_at = zclock_time () + self->heartbeat;
-        }
+        reply = request;        //  Echo is complex... :-)
     }
-    if (zctx_interrupted)
-        printf ("W: interrupt received, killing worker...\n");
-    return NULL;
+    return 0;
 }
 ```
 
-这里有一些关于workerAPI代码需要注意的地方.
+这里有一些关于worker API代码需要注意的地方.
 
-* 这些API是单线程的.这意味着,例如,worker不会在后台发送心跳.令人高兴的是,这正是我们想要的:如果worker应用程序被卡住,心跳将停止,代理将停止向worker发送请求.
+* 这些API是单线程的.这意味着,例如,worker不会在后台发送心跳.令人高兴的是,这正是我们想要的:如果worker应用程序被卡住,心跳将停止,broker将停止向worker发送请求.
 
-* workerAPI不做指数级的回退；这不值得额外的复杂性.
+* worker API不做指数级的回退；这不值得额外的复杂性.
 
 * 这些API不做任何错误报告.如果有不符合预期的情况,它们会提出一个断言(或异常,取决于语言).这对参考实现来说是理想的,所以任何协议错误都会立即显示出来.对于真正的应用来说,API 应该对无效的消息有很好的保护.
 
-你可能想知道为什么workerAPI要手动关闭其套接字并打开一个新的套接字,而ZeroMQ会在对等体消失并回来时自动重新连接套接字.回顾一下简单海盗和偏执海盗的工作器就会明白.尽管ZeroMQ会在代理机死亡后又恢复的情况下自动重新连接worker,但这还不足以让worker重新在代理机上注册.我知道至少有两种解决方案.最简单的,也是我们在这里使用的,就是让worker使用心跳来监控连接,如果它认为代理已经死亡,就关闭它的套接字,用一个新的套接字重新开始.另一种方法是,当borkers收到来自worker的心跳时,挑战未知的worker,要求他们重新注册.这将需要协议支持.
+你可能想知道为什么worker API要手动关闭其套接字并打开一个新的套接字,而ZeroMQ会在peer消失并回来时自动重新连接套接字.回顾一下简单海盗和偏执海盗的worker就会明白.尽管ZeroMQ会在代理机死亡后又恢复的情况下自动重新连接worker,但这还不足以让worker重新在代理机上注册.我知道至少有两种解决方案.最简单的,也是我们在这里使用的,就是让worker使用心跳来监控连接,如果它认为代理已经死亡,就关闭它的套接字,用一个新的套接字重新开始.另一种方法是,当brokers收到来自worker的心跳时,挑战未知的worker,要求他们重新注册.这将需要协议支持.
 
-现在让我们来设计Majordomo代理.它的核心结构是一组队列,每个服务一个.我们将在worker出现时创建这些队列(我们可以在worker消失时删除它们,但现在忘了这一点,因为这会变得很复杂).此外,我们为每个服务保留一个工人队列.
+现在让我们来设计管家代理.它的核心结构是一组队列,每个服务一个.我们将在worker出现时创建这些队列(我们可以在worker消失时删除它们,但现在忘了这一点,因为这会变得很复杂).此外,我们为每个服务保留一个worker队列.
 
-而这里是borkers.
+而这里是brokers.
 
 ```c
-//  Majordomo Protocol broker
-//  A minimal C implementation of the Majordomo Protocol as defined in
+//  管家 Protocol broker
+//  A minimal C implementation of the 管家 Protocol as defined in
 //  http://rfc.zeromq.org/spec:7 and http://rfc.zeromq.org/spec:8.
 
 #include"czmq.h"
@@ -2218,11 +1964,11 @@ int main (int argc, char *argv [])
 }
 ```
 
-这是迄今为止我们所见过的最复杂的例子.它有将近500行的代码.为了写这个并使其具有一定的健壮性,花了两天时间.然而,对于一个完整的面向服务的borkers来说,这仍然是一段简短的代码.
+这是迄今为止我们所见过的最复杂的例子.它有将近500行的代码.为了写这个并使其具有一定的健壮性,花了两天时间.然而,对于一个完整的面向服务的brokers来说,这仍然是一段简短的代码.
 
-这里有一些关于borkers代码的事情需要注意.
+这里有一些关于brokers代码的事情需要注意.
 
-* Majordomo协议让我们在一个套接字上同时处理客户和worker.这对部署和管理代理的人来说更有利:它只需坐在一个ZeroMQ端点上,而不是大多数代理需要的两个端点.
+* 管家协议让我们在一个套接字上同时处理客户和worker.这对部署和管理代理的人来说更有利:它只需坐在一个ZeroMQ端点上,而不是大多数代理需要的两个端点.
 
 * 代理商正确地实现了MDP/0.1的所有功能(据我所知),包括在代理发送无效命令时断开连接,心跳,以及其他功能.
 
@@ -2232,11 +1978,11 @@ int main (int argc, char *argv [])
 
 * 例子中使用了5秒钟的心跳,主要是为了减少你启用跟踪时的输出量.对于大多数局域网应用来说,现实的数值会更低.然而,任何重试都必须足够慢,以允许服务重新启动,比如至少10秒.
 
-我们后来改进和扩展了协议和Majordomo的实现,现在它位于自己的Github项目中.如果你想要一个正确可用的Majordomo栈,请使用GitHub项目.
+我们后来改进和扩展了协议和管家的实现,现在它位于自己的Github项目中.如果你想要一个正确可用的管家栈,请使用GitHub项目.
 
-## 异步的Majordomo模式
+## 异步的管家模式
 
-上一节中的Majordomo实现是简单而愚蠢的.客户端只是原来的简单海盗,被包裹在一个性感的API中.当我在一个测试箱上启动客户端,代理和worker时,它可以在大约14秒内处理100,000个请求.这部分是由于代码的原因,它欢快地复制消息帧,好像CPU周期是免费的.但真正的问题是,我们正在进行网络往返.ZeroMQ禁用了[http://en.wikipedia.org/wiki/Nagles_algorithm Nagle's algorithm],但round-tripping仍然很慢.
+上一节中的管家实现是简单而愚蠢的.客户端只是原来的简单海盗,被包裹在一个性感的API中.当我在一个测试箱上启动客户端,代理和worker时,它可以在大约14秒内处理100,000个请求.这部分是由于代码的原因,它欢快地复制消息帧,好像CPU周期是免费的.但真正的问题是,我们正在进行网络往返.ZeroMQ禁用了[http://en.wikipedia.org/wiki/Nagles_algorithm Nagle's algorithm],但round-tripping仍然很慢.
 
 理论上是很好的,但在实践中,实践是更好的.让我们用一个简单的测试程序来衡量往返的实际成本.这个程序发送了一堆消息,首先是等待每条消息的回复,其次是作为一个批次,把所有的回复作为一个批次读回来.这两种方法做的是同样的工作,但它们给出了非常不同的结果.我们模拟了一个客户端,代理和worker.
 
@@ -2302,7 +2048,7 @@ worker_task (void *args)
 }
 
 //  .split broker task
-//  Here is the broker task. It uses the {{zmq_proxy}} function to switch
+//  Here is the broker task. It uses the `zmq_proxy` function to switch
 //  messages between frontend and backend:
 
 static void *
@@ -2350,9 +2096,9 @@ Asynchronous round-trip test...
  173010 calls/second
 ```
 
-请注意,客户端线程在启动前做了一个小小的暂停.这是为了绕过路由器套接字的一个"特性":如果你用一个尚未连接的对等体的地址发送消息,该消息会被丢弃.在这个例子中,我们没有使用负载平衡机制,所以如果没有睡眠,如果工作线程的连接速度太慢,它就会丢失消息,使我们的测试变得混乱.
+请注意,客户端线程在启动前做了一个小小的暂停.这是为了绕过路由器套接字的一个"特性":如果你用一个尚未连接的peer的地址发送消息,该消息会被丢弃.在这个例子中,我们没有使用负载平衡机制,所以如果没有睡眠,如果工作线程的连接速度太慢,它就会丢失消息,使我们的测试变得混乱.
 
-正如我们所看到的,在最简单的情况下,round-tripping比异步的,"以最快的速度把它推入管道"的方法要慢20倍.让我们看看是否可以把这个方法应用于Majordomo,使其更快.
+正如我们所看到的,在最简单的情况下,round-tripping比异步的,"以最快的速度把它推入管道"的方法要慢20倍.让我们看看是否可以把这个方法应用于管家,使其更快.
 
 首先,我们修改客户端的API,使其在两个独立的方法中发送和接收.
 
@@ -2366,7 +2112,7 @@ zmsg_t *mdcli_recv (mdcli_t *self);
 将同步客户端API重构为异步的,只需要几分钟的时间.
 
 ```c
-//  mdcliapi2 class - Majordomo Protocol Client API
+//  mdcliapi2 class - 管家 Protocol Client API
 //  Implements the MDP/Worker spec at http://rfc.zeromq.org/spec:7.
 
 #include"mdcliapi2.h"
@@ -2526,14 +2272,14 @@ mdcli_recv (mdcli_t *self)
 
 * 我们使用DEALER套接字,而不是REQ,所以我们在每个请求和每个响应之前用一个空的分隔符帧来模拟REQ.
 * 我们不重试请求；如果应用程序需要重试,它可以自己做.
-* 我们将同步的{{send}}方法分成独立的{{send}}和{{recv}}方法.
-* {{send}}方法是异步的,发送后立即返回.因此,调用者可以在得到响应之前发送一些信息.
-* {{recv}}方法等待(有超时)一个响应,并将其返回给调用者.
+* 我们将同步的`send`方法分成独立的`send`和`recv`方法.
+* `send`方法是异步的,发送后立即返回.因此,调用者可以在得到响应之前发送一些信息.
+* `recv`方法等待(有超时)一个响应,并将其返回给调用者.
 
 下面是相应的客户端测试程序,它发送了100,000条消息,然后接收了100,000条返回.
 
 ```c
-//  Majordomo Protocol client example - asynchronous
+//  管家 Protocol client example - asynchronous
 //  Uses the mdcli API to hide all MDP aspects
 
 //  Lets us build this source without creating a library
@@ -2563,7 +2309,7 @@ int main (int argc, char *argv [])
 }
 ```
 
-borkers和worker没有变化,因为我们根本没有修改协议.我们看到性能立即得到了改善.下面是同步客户端在100K请求-回复周期中的运行情况.
+brokers和worker没有变化,因为我们根本没有修改协议.我们看到性能立即得到了改善.下面是同步客户端在100K请求-回复周期中的运行情况.
 
 ```
 $ time mdclient
@@ -2585,7 +2331,7 @@ user    0m0.920s
 sys     0m1.550s
 ```
 
-两倍的速度.不错,但让我们启动10个工人,看看它如何处理流量
+两倍的速度.不错,但让我们启动10个worker,看看它如何处理流量
 
 ```
 $ time mdclient2
@@ -2596,15 +2342,15 @@ user    0m0.730s
 sys     0m0.470s
 ```
 
-它不是完全异步的,因为worker在严格的最后使用的基础上获得他们的消息.但随着worker的增多,它的扩展性会更好.在我的电脑上,在八个左右的worker之后,它并没有变得更快.四个核心只能延伸到目前为止.但我们只用了几分钟的时间,吞吐量就提高了4倍.borkers仍然没有被优化.它把大部分时间都花在了复制消息帧上,而不是做零拷贝,这是它可以做到的.但是,我们在一秒钟内得到了25K个可靠的请求/回复调用,而且工作量相当小.
+它不是完全异步的,因为worker在严格的最后使用的基础上获得他们的消息.但随着worker的增多,它的扩展性会更好.在我的电脑上,在八个左右的worker之后,它并没有变得更快.四个核心只能延伸到目前为止.但我们只用了几分钟的时间,吞吐量就提高了4倍.brokers仍然没有被优化.它把大部分时间都花在了复制消息帧上,而不是做零拷贝,这是它可以做到的.但是,我们在一秒钟内得到了25K个可靠的请求/回复调用,而且工作量相当小.
 
-然而,异步的Majordomo模式并不全是玫瑰花.它有一个基本的弱点,即它不能在没有更多工作的情况下,在borkers崩溃时幸存下来.如果你看一下{{mdcliapi2}}代码,你会发现它并没有尝试在失败后重新连接.一个正确的重新连接需要以下条件.
+然而,异步的管家模式并不全是玫瑰花.它有一个基本的弱点,即它不能在没有更多工作的情况下,在brokers崩溃时幸存下来.如果你看一下`mdcliapi2`代码,你会发现它并没有尝试在失败后重新连接.一个正确的重新连接需要以下条件.
 
 * 每个请求都有一个编号,每个回复都有一个匹配的编号,这最好需要修改协议来强制执行.
 * 跟踪并保留客户端API中所有未完成的请求,即那些尚未收到回复的请求.
 * 在故障转移的情况下,客户端API要*重新发送*所有未完成的请求给代理.
 
-这不是一个破坏性的问题,但它确实表明,性能往往意味着复杂性.这对Majordomo来说值得做吗？这取决于你的用例.对于一个每次调用一次的姓名查询服务,不值得.对于为成千上万的客户提供服务的网络前端来说,可能是的.
+这不是一个破坏性的问题,但它确实表明,性能往往意味着复杂性.这对管家来说值得做吗？这取决于你的用例.对于一个每次调用一次的姓名查询服务,不值得.对于为成千上万的客户提供服务的网络前端来说,可能是的.
 
 ## 服务发现
 
@@ -2614,11 +2360,11 @@ sys     0m0.470s
 
 让我们尝试使用我们已经建立的东西,在MDP的基础上建立而不是修改它.服务发现本身就是一种服务.它可能确实是几种管理服务中的一种,比如"禁用服务X","提供统计数据",等等.我们想要的是一个通用的,可扩展的解决方案,不影响协议或现有的应用.
 
-因此,这里有一个小的RFC,它把这个东西放在MDP上面:[http://rfc.zeromq.org/spec:8 the Majordomo Management Interface (MMI)].我们已经在代理中实现了它,不过除非你读完了整篇文章,否则你可能会错过.我将解释它在borkers中是如何工作的.
+因此,这里有一个小的RFC,它把这个东西放在MDP上面:[http://rfc.zeromq.org/spec:8 the 管家 Management Interface (MMI)].我们已经在代理中实现了它,不过除非你读完了整篇文章,否则你可能会错过.我将解释它在brokers中是如何工作的.
 
-* 当客户请求一个以{{mmi.}}开头的服务时,我们不是把它转给一个worker,而是在内部处理它.
+* 当客户请求一个以`mmi.`开头的服务时,我们不是把它转给一个worker,而是在内部处理它.
 
-* 我们在这个代理中只处理一个服务,即{{mmi.service}},服务发现服务.
+* 我们在这个代理中只处理一个服务,即`mmi.service`,服务发现服务.
 
 * 请求的有效载荷是一个外部服务的名称(一个真正的服务,由worker提供).
 
@@ -2658,13 +2404,13 @@ int main (int argc, char *argv [])
 }
 ```
 
-在有或没有worker运行的情况下尝试这样做,你应该看到小程序相应地报告"200"或"404".在我们的示例代理中,MMI的实现是不牢固的.例如,如果一个worker消失了,服务仍然"存在".在实践中,borkers应该在某个可配置的超时后删除没有worker的服务.
+在有或没有worker运行的情况下尝试这样做,你应该看到小程序相应地报告"200"或"404".在我们的示例代理中,MMI的实现是不牢固的.例如,如果一个worker消失了,服务仍然"存在".在实践中,brokers应该在某个可配置的超时后删除没有worker的服务.
 
 ## Idempotent服务
 
 Idempotency不是你吃药的东西.它的意思是,重复一个操作是安全的.检查时钟是同位素的.把自己的信用卡借给自己的孩子则不是.虽然许多客户对服务器的用例是同位素的,但有些却不是.空闲用例的例子包括.
 
-* 无状态任务分配,即一个管道,其中服务器是无状态工人,纯粹根据请求提供的状态来计算回复.在这种情况下,多次执行同一个请求是安全的(尽管效率不高).
+* 无状态任务分配,即一个管道,其中服务器是无状态worker,纯粹根据请求提供的状态来计算回复.在这种情况下,多次执行同一个请求是安全的(尽管效率不高).
 
 * 一个名称服务,将逻辑地址翻译成端点来绑定或连接.在这种情况下,多次执行相同的查询请求是安全的.
 
@@ -2690,7 +2436,7 @@ Idempotency不是你吃药的东西.它的意思是,重复一个操作是安全�
 
 ## 断开的可靠性(泰坦尼克模式)
 
-一旦你意识到Majordomo是一个"可靠"的消息代理,你可能会想加入一些旋转的铁锈(也就是基于铁的硬盘盘片).毕竟,这对所有的企业消息传递系统都是有效的.这是一个如此诱人的想法,以至于不得不对它持否定态度,这让人有点难过.但残酷的愤世嫉俗是我的专长之一.所以,你不希望基于锈蚀的borkers坐在你的架构中心的一些原因是.
+一旦你意识到管家是一个"可靠"的消息代理,你可能会想加入一些旋转的铁锈(也就是基于铁的硬盘盘片).毕竟,这对所有的企业消息传递系统都是有效的.这是一个如此诱人的想法,以至于不得不对它持否定态度,这让人有点难过.但残酷的愤世嫉俗是我的专长之一.所以,你不希望基于锈蚀的brokers坐在你的架构中心的一些原因是.
 
 * 正如你所看到的,Lazy Pirate客户端的表现出奇的好.它适用于各种架构,从直接的客户端到服务器到分布式队列broker.它确实倾向于假设worker是无状态的和空闲的.但我们可以绕过这个限制,而不必求助于Rust.
 
@@ -2698,15 +2444,15 @@ Idempotency不是你吃药的东西.它的意思是,重复一个操作是安全�
 
 不过,说到这里,基于锈的可靠性有一个合理的用例,那就是异步断开的网络.它解决了Pirate的一个主要问题,即客户端必须实时地等待一个答案.如果客户端和worker只是零星的连接(想想电子邮件的比喻),我们就不能在客户端和worker之间使用无状态网络.我们必须把状态放在中间.
 
-因此,这里是泰坦尼克模式[图],我们将消息写入磁盘,以确保它们永远不会丢失,无论客户端和worker是如何零星连接的.正如我们对服务发现所做的那样,我们将把Titanic分层在MDP之上,而不是扩展它.这是很好的懒惰,因为这意味着我们可以在一个专门的工作器中实现我们的fire-and-forget可靠性,而不是在代理中.这很好,有几个原因.
+因此,这里是泰坦尼克模式[图],我们将消息写入磁盘,以确保它们永远不会丢失,无论客户端和worker是如何零星连接的.正如我们对服务发现所做的那样,我们将把Titanic分层在MDP之上,而不是扩展它.这是很好的懒惰,因为这意味着我们可以在一个专门的worker中实现我们的fire-and-forget可靠性,而不是在代理中.这很好,有几个原因.
 
-* 它*容易得多,因为我们分而治之:borkers处理消息路由,worker处理可靠性.
-* 它允许我们将用一种语言编写的borkers和用另一种语言编写的worker混合起来.
+* 它*容易得多,因为我们分而治之:brokers处理消息路由,worker处理可靠性.
+* 它允许我们将用一种语言编写的brokers和用另一种语言编写的worker混合起来.
 * 它让我们可以独立地发展"防火"技术.
 
-唯一的缺点是,在borkers和硬盘之间有一个额外的网络跳跃.这些好处是很容易值得的.
+唯一的缺点是,在brokers和硬盘之间有一个额外的网络跳跃.这些好处是很容易值得的.
 
-有很多方法可以使一个持久的请求-回复架构.我们的目标是一个简单而无痛的架构.在玩了几个小时之后,我能想到的最简单的设计是一个"代理服务".也就是说,泰坦尼克号根本不影响工人.如果一个客户想要立即得到回复,它就直接与服务对话,并希望该服务是可用的.如果客户乐意等待一段时间,它就与泰坦尼克对话,并问:"嘿,伙计,你能在我去买菜的时候帮我处理一下吗？
+有很多方法可以使一个持久的请求-回复架构.我们的目标是一个简单而无痛的架构.在玩了几个小时之后,我能想到的最简单的设计是一个"代理服务".也就是说,泰坦尼克号根本不影响worker.如果一个客户想要立即得到回复,它就直接与服务对话,并希望该服务是可用的.如果客户乐意等待一段时间,它就与泰坦尼克对话,并问:"嘿,伙计,你能在我去买菜的时候帮我处理一下吗？
 
 ```[[type="textdiagram" title="The Titanic Pattern"]]
 #-----------#   #-----------#   #-----------#
@@ -2737,7 +2483,7 @@ Idempotency不是你吃药的东西.它的意思是,重复一个操作是安全�
 #-----------#   #-----------#   #-----------#
 ```
 
-因此,泰坦尼克既是工人又是客户.客户和泰坦尼克之间的对话是这样的.
+因此,泰坦尼克既是worker又是客户.客户和泰坦尼克之间的对话是这样的.
 
 * 客户.请为我接受这个请求.Titanic.好的,完成.
 * 客户.你有给我的答复吗？泰坦尼克号:是的,就在这里.或者,没有,还没有.
@@ -2745,14 +2491,14 @@ Idempotency不是你吃药的东西.它的意思是,重复一个操作是安全�
 
 而Titanic和broker以及worker之间的对话则是这样的.
 
-* Titanic:嘿,Broker,有咖啡服务吗？borkers.呃,是的,看起来像.
+* Titanic:嘿,Broker,有咖啡服务吗？brokers.呃,是的,看起来像.
 * Titanic: 嘿,咖啡服务,请为我处理这个.
 * 咖啡.当然,给你.
 * 泰坦尼克号:太棒了!
 
 你可以通过这个和可能的失败情况来解决.如果一个worker在处理一个请求时崩溃了,Titanic会无限期地重试.如果一个回复在某个地方丢失了,Titanic会重试.如果请求被处理了,但客户端没有得到回复,它将再次询问.如果Titanic在处理请求或回复时崩溃了,客户端将再次尝试.只要请求被完全提交给安全存储,工作就不会丢失.
 
-握手是迂腐的,但可以进行流水线处理,也就是说,客户端可以使用异步的Majordomo模式来做大量的工作,然后稍后获得响应.
+握手是迂腐的,但可以进行流水线处理,也就是说,客户端可以使用异步的管家模式来做大量的工作,然后稍后获得响应.
 
 我们需要一些方法来让客户端请求*它*的回复.我们会有很多客户要求相同的服务,客户消失后又以不同的身份重新出现.这里有一个简单的,相当安全的解决方案.
 
@@ -2763,9 +2509,9 @@ Idempotency不是你吃药的东西.它的意思是,重复一个操作是安全�
 
 在我们跳下去写另一个正式的规范之前(有趣,有趣！),让我们考虑一下客户端如何与Titanic对话.一种方法是使用一个单一的服务,向它发送三种不同的请求类型.另一种方法,似乎更简单,是使用三个服务.
 
-* {{titanic.request}}:存储一个请求信息,并返回一个请求的UUID.
-* {{titanic.reply}}:获取一个给定请求UUID的回复(如果有的话).
-* {{titanic.close}}:确认回复已被存储和处理.
+* `titanic.request`:存储一个请求信息,并返回一个请求的UUID.
+* `titanic.reply`:获取一个给定请求UUID的回复(如果有的话).
+* `titanic.close`:确认回复已被存储和处理.
 
 我们将只是做一个多线程的worker,正如我们从ZeroMQ的多线程经验中看到的那样,这是很微妙的.然而,让我们首先勾勒一下Titanic在ZeroMQ消息和框架方面的样子.这给了我们[http://rfc.zeromq.org/spec:9 Titanic服务协议(TSP)].
 
@@ -2864,7 +2610,7 @@ int main (int argc, char *argv [])
 
 当然,这可以而且应该被包裹在某种框架或API中.要求普通的应用开发者学习消息传递的全部细节是不健康的:这伤害了他们的大脑,花费了时间,并且提供了太多的方法来制造错误的复杂性.此外,它还会让人很难增加智能.
 
-例如,这个客户端在每次请求时都会阻塞,而在一个真正的应用中,我们希望在任务执行的同时做一些有用的工作.这需要一些不简单的管道来建立一个后台线程,并与之干净地对话.这就是你想用一个简单的API来包装的事情,一般的开发者是不会滥用的.这与我们用于Majordomo的方法相同.
+例如,这个客户端在每次请求时都会阻塞,而在一个真正的应用中,我们希望在任务执行的同时做一些有用的工作.这需要一些不简单的管道来建立一个后台线程,并与之干净地对话.这就是你想用一个简单的API来包装的事情,一般的开发者是不会滥用的.这与我们用于管家的方法相同.
 
 下面是Titanic的实现.这个服务器使用三个线程来处理三个服务,正如所建议的那样.它使用最粗暴的方法实现了对磁盘的完全持久化:每个消息一个文件.它是如此简单,让人害怕.唯一复杂的部分是,它为所有的请求保留了一个单独的队列,以避免重复读取目录.
 
@@ -2918,9 +2664,9 @@ s_reply_filename (char *uuid) {
 }
 
 //  .split Titanic request service
-//  The {{titanic.request}} task waits for requests to this service. It writes
+//  The `titanic.request` task waits for requests to this service. It writes
 //  each request to disk and returns a UUID to the client. The client picks
-//  up the reply asynchronously using the {{titanic.reply}} service:
+//  up the reply asynchronously using the `titanic.reply` service:
 
 static void
 titanic_request (void *args, zctx_t *ctx, void *pipe)
@@ -2965,7 +2711,7 @@ titanic_request (void *args, zctx_t *ctx, void *pipe)
 }
 
 //  .split Titanic reply service
-//  The {{titanic.reply}} task checks if there's a reply for the specified
+//  The `titanic.reply` task checks if there's a reply for the specified
 //  request (by UUID), and returns a 200 (OK), 300 (Pending), or 400
 //  (Unknown) accordingly:
 
@@ -3008,7 +2754,7 @@ titanic_reply (void *context)
 }
 
 //  .split Titanic close task
-//  The {{titanic.close}} task removes any waiting replies for the request
+//  The `titanic.close` task removes any waiting replies for the request
 //  (specified by UUID). It's idempotent, so it is safe to call more than
 //  once in a row:
 
@@ -3045,7 +2791,7 @@ titanic_close (void *context)
 //  This is the main thread for the Titanic worker. It starts three child
 //  threads; for the request, reply, and close services. It then dispatches
 //  requests to workers using a simple brute force disk queue. It receives
-//  request UUIDs from the {{titanic.request}} service, saves these to a disk
+//  request UUIDs from the `titanic.request` service, saves these to a disk
 //  file, and then throws each request at MDP workers until it gets a
 //  response.
 
@@ -3111,7 +2857,7 @@ int main (int argc, char *argv [])
 
 //  .split try to call a service
 //  Here, we first check if the requested MDP service is defined or not,
-//  using a MMI lookup to the Majordomo broker. If the service exists,
+//  using a MMI lookup to the 管家 broker. If the service exists,
 //  we send a request and wait for a reply using the conventional MDP
 //  client API. This is not meant to be fast, just very simple:
 
@@ -3168,15 +2914,15 @@ s_service_success (char *uuid)
 }
 ```
 
-为了测试这一点,启动{{mdbroker}}和{{titanic}},然后运行{{ticlient}}.现在任意启动{{mdworker}},你应该看到客户端得到了响应,并愉快地退出.
+为了测试这一点,启动`mdbroker`和`titanic`,然后运行`ticlient`.现在任意启动`mdworker`,你应该看到客户端得到了响应,并愉快地退出.
 
 关于这段代码的一些注意事项.
 
-* 请注意,有些循环是从发送消息开始的,有些则是从接收消息开始的.这是因为Titanic在不同的角色中既是客户端又是工作器.
-* Titanic代理使用MMI服务发现协议,只向那些看起来正在运行的服务发送请求.由于我们的小Majordomo代理中的MMI实现相当差,这不会一直工作下去.
-* 我们使用一个inproc连接,将新的请求数据从{{titanic.request}}服务发送到主调度器.这使调度器不必扫描磁盘目录,加载所有请求文件,并按日期/时间排序.
+* 请注意,有些循环是从发送消息开始的,有些则是从接收消息开始的.这是因为Titanic在不同的角色中既是客户端又是worker.
+* Titanic代理使用MMI服务发现协议,只向那些看起来正在运行的服务发送请求.由于我们的小管家代理中的MMI实现相当差,这不会一直工作下去.
+* 我们使用一个inproc连接,将新的请求数据从`titanic.request`服务发送到主调度器.这使调度器不必扫描磁盘目录,加载所有请求文件,并按日期/时间排序.
 
-这个例子的重要之处不是性能(虽然我没有测试过,但肯定很糟糕),而是它对可靠性契约的实现程度.要试一下,先启动mdbroker和titanic程序.然后启动ticlient,再启动mdworker回声服务.你可以使用{{-v}}选项来运行所有这四个程序,以进行粗略的活动追踪.你可以停止和重启任何一块*,除了客户端*,没有什么会丢失.
+这个例子的重要之处不是性能(虽然我没有测试过,但肯定很糟糕),而是它对可靠性约定的实现程度.要试一下,先启动mdbroker和titanic程序.然后启动ticlient,再启动mdworker回声服务.你可以使用`-v`选项来运行所有这四个程序,以进行粗略的活动追踪.你可以停止和重启任何一块*,除了客户端*,没有什么会丢失.
 
 如果你想在实际案例中使用Titanic,你会迅速问:"我们怎样才能让它更快？"
 
@@ -3579,7 +3325,7 @@ int main (int argc, char *argv [])
     return 0;
 }
 ```
-</details>
+
 
 这是客户:
 
@@ -3660,7 +3406,7 @@ int main (void)
     return 0;
 }
 ```
-</details>
+
 
 要测试二进制星,请按任何顺序启动服务器和客户端:
 
@@ -3672,9 +3418,9 @@ bstarcli
 
 然后你可以通过杀死主服务器来引发故障转移,通过重启主服务器和杀死备份服务器来恢复.请注意,触发故障切换和恢复的是客户投票.
 
-二进制星是由一个有限状态机驱动的[图].事件是对等体的状态,所以"对等体活跃"意味着另一个服务器已经告诉我们它在活动."客户端请求"意味着我们已经收到了一个客户端请求."客户端投票"意味着我们已经收到了一个客户端请求,并且我们的对等体在两个心跳中没有活动.
+二进制星是由一个有限状态机驱动的[图].事件是peer的状态,所以"peer活跃"意味着另一个服务器已经告诉我们它在活动."客户端请求"意味着我们已经收到了一个客户端请求."客户端投票"意味着我们已经收到了一个客户端请求,并且我们的peer在两个心跳中没有活动.
 
-注意,服务器使用PUB-SUB套接字进行状态交换.其他的套接字组合在这里是不起作用的.如果没有对等体准备好接收消息,PUSH和DEALER就会阻塞.PAIR在对等体消失又回来的情况下不会重新连接.ROUTER需要对等体的地址,然后才能向其发送消息.
+注意,服务器使用PUB-SUB套接字进行状态交换.其他的套接字组合在这里是不起作用的.如果没有peer准备好接收消息,PUSH和DEALER就会阻塞.PAIR在peer消失又回来的情况下不会重新连接.ROUTER需要peer的地址,然后才能向其发送消息.
 
 
 ```[[type="textdiagram" title="Binary Star Finite State Machine"]]
@@ -3709,7 +3455,7 @@ bstarcli
 
 Binary Star很有用,而且足够通用,可以打包成一个可重用的反应器类.反应器会在有消息需要处理时运行并调用我们的代码.这比把二进制之星的代码复制/粘贴到我们需要这种功能的每个服务器上要好得多.
 
-在C语言中,我们封装了之前看到的CZMQ {{zloop}}类.{{zloop}}可以让你注册处理程序,对套接字和定时器事件作出反应.在二进制之星的反应器中,我们为投票者和状态变化(从主动到被动,反之亦然)提供处理程序.以下是{{bstar}}的内容 API.
+在C语言中,我们封装了之前看到的CZMQ `zloop`类.`zloop`可以让你注册处理程序,对套接字和定时器事件作出反应.在二进制之星的反应器中,我们为投票者和状态变化(从主动到被动,反之亦然)提供处理程序.以下是`bstar`的内容 API.
 
 ```[[type="fragment" name="bstar"]]
 * 创建一个新的二进制之星实例,使用本地(bind)和
@@ -3942,7 +3688,7 @@ int s_voter_ready (zloop_t *loop, zmq_pollitem_t *poller, void *arg)
 
 //  .until
 //  .split constructor
-//  This is the constructor for our {{bstar}} class. We have to tell it 
+//  This is the constructor for our `bstar` class. We have to tell it 
 //  whether we're primary or backup server, as well as our local and 
 //  remote endpoints to bind and connect to:
 
@@ -4005,7 +3751,7 @@ bstar_zloop (bstar_t *self)
 //  This method registers a client voter socket. Messages received
 //  on this socket provide the CLIENT_REQUEST events for the Binary Star
 //  FSM and are passed to the provided application handler. We require
-//  exactly one voter per {{bstar}} instance:
+//  exactly one voter per `bstar` instance:
 
 int
 bstar_voter (bstar_t *self, char *endpoint, int type, zloop_fn handler,
@@ -4109,13 +3855,13 @@ int main (int argc, char *argv [])
     return 0;
 }
 ```
-</details>
+
 
 ## 无经纪商的可靠性(自由人模式)
 
-当我们经常把ZeroMQ解释为"无borkers的消息传递"时,如此关注基于borkers的可靠性似乎很讽刺.然而,在消息传递中,正如在现实生活中一样,中间人既是一种负担,也是一种好处.在实践中,大多数消息架构都从分布式和中介式消息传递的混合中受益.当你能自由决定你想做什么权衡时,你会得到最好的结果.这就是为什么我可以开车20分钟到批发商那里为一个聚会买五箱酒,但我也可以步行10分钟到街角的商店买一瓶酒来吃.我们对时间,能量和成本的高度情境敏感的相对估值对现实世界的经济至关重要.而且它们对基于消息的最佳架构也是至关重要的.
+当我们经常把ZeroMQ解释为"无brokers的消息传递"时,如此关注基于brokers的可靠性似乎很讽刺.然而,在消息传递中,正如在现实生活中一样,中间人既是一种负担,也是一种好处.在实践中,大多数消息架构都从分布式和中介式消息传递的混合中受益.当你能自由决定你想做什么权衡时,你会得到最好的结果.这就是为什么我可以开车20分钟到批发商那里为一个聚会买五箱酒,但我也可以步行10分钟到街角的商店买一瓶酒来吃.我们对时间,能量和成本的高度情境敏感的相对估值对现实世界的经济至关重要.而且它们对基于消息的最佳架构也是至关重要的.
 
-这就是为什么ZeroMQ没有*强加一个以borkers为中心的架构,尽管它确实给你提供了建立borkers(又称*代理)的工具,而且到目前为止我们已经建立了十几个不同的borkers,只是为了练习.
+这就是为什么ZeroMQ没有*强加一个以brokers为中心的架构,尽管它确实给你提供了建立brokers(又称*代理)的工具,而且到目前为止我们已经建立了十几个不同的brokers,只是为了练习.
 
 因此,在本章的最后,我们将解构我们到目前为止所构建的基于代理的可靠性,并将其转回一个分布式的对等架构,我称之为自由人模式.我们的用例将是一个名称解析服务.这是ZeroMQ架构的一个常见问题:我们如何知道要连接到哪个端点？在代码中硬编码TCP/IP地址是非常脆弱的.使用配置文件会造成管理上的恶梦.想象一下,如果你不得不在你使用的每台电脑或手机上手工配置你的网络浏览器,以实现"google.com"是"74.125.230.82".
 
@@ -4127,7 +3873,7 @@ int main (int argc, char *argv [])
 
 * 要可靠,因为如果它不可用,应用程序将无法连接到网络.
 
-把名字服务放在面向服务的Majordomo代理后面,从某些角度看是很聪明的.然而,把名字服务作为一个服务器暴露出来,让客户直接连接到它,这样做更简单,也更令人吃惊.如果我们这样做对了,名字服务就成了我们需要在代码或配置文件中硬编码的*唯一的全球网络端点.
+把名字服务放在面向服务的管家代理后面,从某些角度看是很聪明的.然而,把名字服务作为一个服务器暴露出来,让客户直接连接到它,这样做更简单,也更令人吃惊.如果我们这样做对了,名字服务就成了我们需要在代码或配置文件中硬编码的*唯一的全球网络端点.
 
 ```[[type="textdiagram" title="The Freelance Pattern"]]
 #-----------#   #-----------#   #-----------#
@@ -4147,7 +3893,7 @@ int main (int argc, char *argv [])
 
 我们旨在处理的故障类型是服务器崩溃和重启,服务器繁忙循环,服务器过载和网络问题.为了获得可靠性,我们将创建一个名称服务器池,这样如果一个服务器崩溃或消失,客户可以连接到另一个,以此类推.在实践中,两个就足够了.但在这个例子中,我们将假设池子可以是任何大小[图].
 
-在这个架构中,一大批客户直接连接到一小批服务器.服务器与它们各自的地址绑定.这与像Majordomo这样基于borkers的方法有根本的不同,在这种方法中,worker连接到borkers.客户有几个选择.
+在这个架构中,一大批客户直接连接到一小批服务器.服务器与它们各自的地址绑定.这与像管家这样基于brokers的方法有根本的不同,在这种方法中,worker连接到brokers.客户有几个选择.
 
 * 使用REQ套接字和Lazy Pirate模式.这很简单,但需要一些额外的智能,这样客户就不会愚蠢地一次又一次地重新连接到死去的服务器.
 
@@ -4202,7 +3948,7 @@ int main(int argc, char* argv[]) {
     return 0;
 }
 ```
-</details>
+
 
 然后启动客户端,指定一个或多个连接端点作为参数.
 
@@ -4235,7 +3981,7 @@ static std::unique_ptr<zmq::message_t> s_try_request(zmq::context_t &context,
     zmq::message_t message(request.data(), request.size());
     client.send(message, zmq::send_flags::none);
 
-    zmq_pollitem_t items[] = {{client, 0, ZMQ_POLLIN, 0}};
+    zmq_pollitem_t items[] = `client, 0, ZMQ_POLLIN, 0`;
     zmq::poll(items, 1, REQUEST_TIMEOUT);
     std::unique_ptr<zmq::message_t> reply = std::make_unique<zmq::message_t>();
     zmq::recv_result_t recv_result;
@@ -4285,7 +4031,7 @@ int main(int argc, char *argv[]) {
     return 0;
 }
 ```
-</details>
+
 
 一个运行样本是.
 
@@ -4371,7 +4117,7 @@ int main(int argc, char *argv[]) {
 }
 
 ```
-</details>
+
 
 然后启动客户端,将连接端点指定为参数:
 
@@ -4393,7 +4139,7 @@ const int GLOBAL_TIMEOUT = 2500;
 const int TOTAL_REQUESTS = 10000;
 
 //  .split class implementation
-//  Here is the {{flclient}} class implementation. Each instance has a
+//  Here is the `flclient` class implementation. Each instance has a
 //  context, a DEALER socket it uses to talk to the servers, a counter
 //  of how many servers it's connected to, and a request sequence number:
 class flclient {
@@ -4509,7 +4255,7 @@ int main(int argc, char *argv[]) {
     return 0;
 }
 ```
-</details>
+
 
 这里有一些关于客户端实现的事情需要注意.
 
@@ -4535,13 +4281,13 @@ int main(int argc, char *argv[]) {
 
 我们可以通过切换到ROUTER套接字来解决客户端的主要问题.这让我们可以向特定的服务器发送请求,避开我们知道已经死亡的服务器,而且一般来说,我们想怎么聪明就怎么聪明.我们也可以通过切换到ROUTER套接字来解决服务器的主要问题(单线程性).
 
-但是在两个匿名套接字(还没有设置身份)之间做ROUTER到ROUTER是不可能的.双方只有在收到第一条消息时才会产生一个身份(对于另一个对等体),因此在第一次收到消息之前,双方都不能与对方交谈.摆脱这个难题的唯一方法是作弊,在一个方向上使用硬编码的身份.在客户端/服务器的情况下,正确的作弊方式是让客户端"知道"服务器的身份.反过来做将是疯狂的,除了复杂和讨厌之外,因为任何数量的客户端都应该能够独立出现.对于一个种族灭绝的独裁者来说,疯狂,复杂和讨厌是很好的属性,但对于软件来说则是糟糕的属性.
+但是在两个匿名套接字(还没有设置身份)之间做ROUTER到ROUTER是不可能的.双方只有在收到第一条消息时才会产生一个身份(对于另一个peer),因此在第一次收到消息之前,双方都不能与对方交谈.摆脱这个难题的唯一方法是作弊,在一个方向上使用硬编码的身份.在客户端/服务器的情况下,正确的作弊方式是让客户端"知道"服务器的身份.反过来做将是疯狂的,除了复杂和讨厌之外,因为任何数量的客户端都应该能够独立出现.对于一个种族灭绝的独裁者来说,疯狂,复杂和讨厌是很好的属性,但对于软件来说则是糟糕的属性.
 
 与其发明另一个概念来管理,我们不如使用连接端点作为身份.这是一个独特的字符串,双方都可以在这个字符串上达成一致,而不需要比他们已经拥有的猎枪模型更多的事先知识.这是一种偷偷摸摸的,有效的连接两个ROUTER套接字的方法.
 
 记住ZeroMQ的身份是如何工作的.服务器ROUTER套接字在绑定其套接字之前设置一个身份.当客户端连接时,在任何一方发送真正的消息之前,他们做一个小小的握手来交换身份.客户端ROUTER套接字在没有设置身份时,向服务器发送一个空身份.服务器生成一个随机的UUID来指定客户,供其自己使用.服务器将它的身份(我们已经同意将是一个端点字符串)发送给客户端.
 
-这意味着我们的客户端可以在连接建立后立即将消息发送到服务器(即在其ROUTER套接字上发送,指定服务器端点为身份).这不是在做完{{zmq_connect[3]}}后立即进行的,而是在之后的某个随机时间.这里有一个问题:我们不知道服务器什么时候会真正可用并完成其连接握手.如果服务器是在线的,可能是在几毫秒之后.如果服务器坏了,系统管理员出去吃午饭了,那就可能是一个小时以后.
+这意味着我们的客户端可以在连接建立后立即将消息发送到服务器(即在其ROUTER套接字上发送,指定服务器端点为身份).这不是在做完`zmq_connect[3]`后立即进行的,而是在之后的某个随机时间.这里有一个问题:我们不知道服务器什么时候会真正可用并完成其连接握手.如果服务器是在线的,可能是在几毫秒之后.如果服务器坏了,系统管理员出去吃午饭了,那就可能是一个小时以后.
 
 这里有一个小小的悖论.我们需要知道服务器何时开始连接并可用于工作.在Freelance模式中,与我们在本章前面看到的基于代理的模式不同,服务器在被说到之前是沉默的.因此,在服务器告诉我们它在线之前,我们不能和它说话,而在我们问它之前,它也不能这样做.
 
@@ -4630,7 +4376,7 @@ void dump_binary(const zmqpp::message &msg) {
 }
 
 ```
-</details>
+
 
 然而,自由职业者的客户端已经变得很大了.为了清楚起见,我们把它分成了一个应用实例和一个从事艰苦工作的类.这里是顶级的应用程序.
 
@@ -4677,9 +4423,9 @@ int main(void) {
     return 0;
 }
 ```
-</details>
 
-而这里,几乎和Majordomoborkers一样复杂和庞大,是客户端API类.
+
+而这里,几乎和管家brokers一样复杂和庞大,是客户端API类.
 
 <summary><mark><font color=darkred>flcliapi class - Freelance Pattern agent class</font></mark></summary>
 
@@ -4904,14 +4650,14 @@ bool Flcliapi::agent(zmqpp::socket* pipe, zmqpp::context& context) {
 }
 ```
 
-</details>
+
 
 这个API的实现相当复杂,使用了一些我们以前没有见过的技术.
 
-**多线程API**:客户端API由两部分组成,一个同步的{{flcliapi}}类在应用线程中运行,另一个异步的*agent*类作为后台线程运行.还记得ZeroMQ是如何使创建多线程的应用程序变得容易的吗？flcliapi和代理类通过{{inproc}}套接字与对方的消息对话.所有ZeroMQ方面(如创建和销毁上下文)都隐藏在API中.代理实际上就像一个小型的borkers,在后台与服务器对话,因此当我们提出请求时,它可以尽最大努力到达它认为可用的服务器.
+**多线程API**:客户端API由两部分组成,一个同步的`flcliapi`类在应用线程中运行,另一个异步的*agent*类作为后台线程运行.还记得ZeroMQ是如何使创建多线程的应用程序变得容易的吗？flcliapi和代理类通过`inproc`套接字与对方的消息对话.所有ZeroMQ方面(如创建和销毁上下文)都隐藏在API中.代理实际上就像一个小型的brokers,在后台与服务器对话,因此当我们提出请求时,它可以尽最大努力到达它认为可用的服务器.
 
 **无滴答的轮询计时器**:在以前的轮询循环中,我们总是使用一个固定的滴答间隔,例如1秒,这很简单,但在对电源敏感的客户端(如笔记本或手机)上却不是很好,因为唤醒CPU会耗费电能.为了好玩,也为了帮助拯救地球,代理使用了一个*tickless计时器*,它根据我们期待的下一次超时来计算轮询延迟.一个适当的实现会保持一个有序的超时列表.我们只需检查所有的超时,并计算出直到下一次超时的投票延迟.
 
 ## 结语
 
-在本章中,我们已经看到了各种可靠的请求-回复机制,每一种都有一定的成本和好处.示例代码虽然没有经过优化,但基本可以用于实际使用.在所有不同的模式中,在生产中使用的两个模式是基于borkers的可靠性的Majordomo模式和无borkers的可靠性的Freelance模式.
+在本章中,我们已经看到了各种可靠的请求-回复机制,每一种都有一定的成本和好处.示例代码虽然没有经过优化,但基本可以用于实际使用.在所有不同的模式中,在生产中使用的两个模式是基于brokers的可靠性的管家模式和无brokers的可靠性的Freelance模式.
